@@ -25,6 +25,7 @@ from webauthn.helpers.structs import (
 
 from app.db.database import SessionLocal
 from app.db.models import Passkey, PasskeyChallenge, PasskeySignupChallenge, User
+from app.authentication_methods import require_another_primary_method
 
 
 CHALLENGE_TTL_SECONDS = 5 * 60
@@ -521,6 +522,12 @@ def list_passkeys(user_id: int) -> list[dict[str, object]]:
 def delete_passkey(user_id: int, passkey_id: int) -> bool:
     SessionLocalFactory = _require_db()
     with SessionLocalFactory() as db:
+        user = db.scalar(
+            select(User).where(User.id == int(user_id)).with_for_update()
+        )
+        if user is None:
+            return False
+
         row = db.scalar(
             select(Passkey).where(
                 Passkey.id == passkey_id,
@@ -529,6 +536,9 @@ def delete_passkey(user_id: int, passkey_id: int) -> bool:
         )
         if row is None:
             return False
+
+        # Never allow a passkey-only account to remove its final sign-in method.
+        require_another_primary_method(db, int(user_id), "passkey")
         db.delete(row)
         db.commit()
         return True

@@ -197,18 +197,21 @@ def setup(user_id: int) -> dict[str, object]:
         if existing is not None and existing.enabled:
             raise ValueError("Authenticator app is already enabled.")
 
+        setup_expires_at = now + timedelta(seconds=TOTP_SETUP_TTL_SECONDS)
         if existing is None:
             credential = TotpCredential(
                 user_id=int(user_id),
                 secret_encrypted=_encrypt_secret(secret),
                 enabled=False,
                 confirmed_at=None,
+                setup_expires_at=setup_expires_at,
             )
             db.add(credential)
         else:
             existing.secret_encrypted = _encrypt_secret(secret)
             existing.enabled = False
             existing.confirmed_at = None
+            existing.setup_expires_at = setup_expires_at
             existing.last_used_at = None
         db.commit()
 
@@ -248,18 +251,30 @@ def setup(user_id: int) -> dict[str, object]:
 
 
 def confirm_setup(user_id: int, code: str) -> bool:
+    now = datetime.now(timezone.utc)
     with _require_db()() as db:
         credential = _secret_exists(db, user_id)
         if credential is None:
             raise ValueError("Start authenticator setup first.")
+
+        # Setup expiry is enforced server-side, not only displayed by the UI.
+        # An unconfirmed credential is never allowed to become enabled after
+        # its setup window has elapsed.
+        if credential.enabled:
+            raise ValueError("Authenticator app is already enabled.")
+        if credential.setup_expires_at is None or credential.setup_expires_at <= now:
+            db.delete(credential)
+            db.commit()
+            raise ValueError("Authenticator setup expired. Start setup again.")
 
         secret = _decrypt_secret(str(credential.secret_encrypted))
         if not verify_code(secret, code):
             raise ValueError("Invalid authenticator code.")
 
         credential.enabled = True
-        credential.confirmed_at = datetime.now(timezone.utc)
-        credential.last_used_at = datetime.now(timezone.utc)
+        credential.confirmed_at = now
+        credential.setup_expires_at = None
+        credential.last_used_at = now
         db.commit()
 
     return True

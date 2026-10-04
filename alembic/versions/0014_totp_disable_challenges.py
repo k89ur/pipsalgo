@@ -25,6 +25,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("token_hash", sa.LargeBinary(length=32), nullable=False),
+        sa.Column("email_hash", sa.LargeBinary(length=32), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -56,6 +57,11 @@ def upgrade() -> None:
         ["token_hash"],
     )
     op.create_index(
+        "ix_totp_disable_challenges_email_hash",
+        "totp_disable_challenges",
+        ["email_hash"],
+    )
+    op.create_index(
         "ix_totp_disable_challenges_expires_at",
         "totp_disable_challenges",
         ["expires_at"],
@@ -64,6 +70,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_totp_disable_challenges_expires_at", table_name="totp_disable_challenges")
+    op.drop_index("ix_totp_disable_challenges_email_hash", table_name="totp_disable_challenges")
     op.drop_index("ix_totp_disable_challenges_token_hash", table_name="totp_disable_challenges")
     op.drop_index("ix_totp_disable_challenges_user_id", table_name="totp_disable_challenges")
     op.drop_table("totp_disable_challenges")

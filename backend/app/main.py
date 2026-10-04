@@ -2846,55 +2846,7 @@ def history(
             )
             return candles
 
-        if account_id is None:
-            raise HTTPException(status_code=409, detail="Select a connected broker account before loading market data.")
-        account, _, _, _ = broker_accounts.get_account_credentials(account_id)
-        access_token = broker_accounts.get_access_token(account_id)
-        if not access_token:
-            raise HTTPException(status_code=409, detail="Selected broker account is not connected.")
-        if account.broker == "dhan":
-            candles = _dhan_history(account_id, symbol, timeframe, limit, from_date, to_date)
-            if not candles:
-                diagnostics.record(
-                    severity="ERROR", category="MARKET_DATA", component="History API",
-                    service="/api/history", error_code="PIP-MARKET-HISTORY-002",
-                    message=f"No historical data was returned for {symbol.strip().upper()}.",
-                    account_id=account_id, broker=account.broker, symbol=symbol.strip().upper(),
-                )
-                raise HTTPException(status_code=503, detail=f"No historical data returned for {symbol.strip().upper()}.")
-            diagnostics.resolve(error_code="PIP-MARKET-HISTORY-002", account_id=account_id, symbol=symbol.strip().upper())
-            return candles
-
-        selected_provider = _market_data_provider_for_account(account_id)
-
-        api_symbol = resolve_api_symbol(symbol)
-        if not api_symbol:
-            raise unresolved_symbol_error(symbol)
-        try:
-            candles = selected_provider.get_history(
-                api_symbol,
-                timeframe,
-                limit,
-                start=from_date,
-                end=to_date,
-            )
-        except ValueError as first_error:
-            candidates = _master_symbol_candidates(symbol)
-            last_error = first_error
-            candles = None
-            for candidate in candidates:
-                if candidate == api_symbol:
-                    continue
-                try:
-                    candles = selected_provider.get_history(
-                        candidate,
-                        timeframe,
-                        limit,
-                        start=from_date,
-                        end=to_date,
-                    )
-                    break
-                except ValueError as exc:
+        # Broker accounts are for trading only. Market data always comes from the primary source.\n        return [to_candle(item) for item in candles]\n    except ValueError as exc:
                     last_error = exc
             if candles is None:
                 raise last_error
@@ -2921,23 +2873,18 @@ def history(
 
 @app.post("/api/pipscript/data")
 def pipscript_data(request: PipscriptDataBatchRequest) -> dict[str, object]:
-    """Controlled market-data gateway for browser Pipscripts."""
-    if request.account_id is None:
-        raise HTTPException(status_code=409, detail="Select a connected broker account before running Pipscript.")
-    account, client_id, _, _ = broker_accounts.get_account_credentials(request.account_id)
-    access_token = broker_accounts.get_access_token(request.account_id)
-    if not access_token:
-        raise HTTPException(status_code=409, detail="Selected broker account is not connected.")
-    if account.broker == "dhan":
-        from app.providers.accounts import DhanAccountProvider
-        selected_provider = DhanAccountProvider(client_id, access_token)
-    else:
-        selected_provider = _market_data_provider_for_account(request.account_id)
+    """Controlled market-data gateway for browser Pipscripts.
+
+    Pipscripts use the same primary market-data source as charts and watchlists.
+    Broker connections are never required for market-data requests.
+    """
     if len(request.requests) > 40:
         raise HTTPException(status_code=400, detail="A maximum of 40 Pipscript data requests is supported.")
+
     history_data: dict[str, dict[str, object]] = {}
     quotes_data: dict[str, object] = {}
     errors: list[dict[str, str]] = []
+
     for index, item in enumerate(request.requests):
         name = (item.name or item.symbol or f"request_{index + 1}").strip().upper() or f"REQUEST_{index + 1}"
         try:
@@ -2947,56 +2894,23 @@ def pipscript_data(request: PipscriptDataBatchRequest) -> dict[str, object]:
                 if not 50 <= item.limit <= 2000:
                     raise ValueError("history limit must be between 50 and 2000.")
                 original = item.symbol.strip().upper()
-                if account.broker == "dhan":
-                    candles = _dhan_history(request.account_id, original, item.timeframe, item.limit, item.from_date, item.to_date)
-                else:
-                    api_symbol = resolve_api_symbol(original)
-                    if not api_symbol:
-                        raise unresolved_symbol_error(original)
-                    try:
-                        candles = selected_provider.get_history(api_symbol, item.timeframe, item.limit, start=item.from_date, end=item.to_date)
-                    except ValueError as first_error:
-                        candidates = _master_symbol_candidates(original)
-                        last_error = first_error
-                        candles = None
-                        for candidate in candidates:
-                            if candidate == api_symbol:
-                                continue
-                            try:
-                                candles = selected_provider.get_history(candidate, item.timeframe, item.limit, start=item.from_date, end=item.to_date)
-                                break
-                            except ValueError as exc:
-                                last_error = exc
-                        if candles is None:
-                            raise last_error
-                history_data[name] = {"symbol": original, "timeframe": item.timeframe, "bars": [to_candle(candle).model_dump() for candle in candles]}
+                candles = market_data_master.get_history(
+                    original,
+                    item.timeframe,
+                    item.limit,
+                    start=item.from_date,
+                    end=item.to_date,
+                )
+                history_data[name] = {
+                    "symbol": original,
+                    "timeframe": item.timeframe,
+                    "bars": [to_candle(candle).model_dump() for candle in candles],
+                }
             elif item.type == "quote":
                 if not item.symbol:
                     raise ValueError("quote request requires symbol.")
                 original = item.symbol.strip().upper()
-                if account.broker == "dhan":
-                    result = _dhan_quote(request.account_id, original)
-                else:
-                    api_symbol = resolve_api_symbol(original)
-                    if not api_symbol:
-                        raise unresolved_symbol_error(original)
-                    try:
-                        result = selected_provider.get_quote(api_symbol)
-                    except ValueError as first_error:
-                        candidates = _master_symbol_candidates(original)
-                        last_error = first_error
-                        result = None
-                        for candidate in candidates:
-                            if candidate == api_symbol:
-                                continue
-                            try:
-                                result = selected_provider.get_quote(candidate)
-                                break
-                            except ValueError as exc:
-                                last_error = exc
-                        if result is None:
-                            raise last_error
-                    result = replace(result, symbol=original)
+                result = market_data_master.get_quote(original)
                 quotes_data[name] = to_quote(result).model_dump()
             elif item.type == "quotes":
                 requested = [value.strip().upper() for value in item.symbols if value and value.strip()]
@@ -3004,11 +2918,12 @@ def pipscript_data(request: PipscriptDataBatchRequest) -> dict[str, object]:
                     raise ValueError("quotes request requires a non-empty symbols array.")
                 if len(requested) > 1000:
                     raise ValueError("A maximum of 1000 symbols can be requested in one quotes request.")
-                results = get_quotes_for_symbols(requested, selected_provider)
+                results = market_data_master.get_quotes(requested)
                 quotes_data[name] = {"items": [quote.model_dump() for quote in results]}
         except (ValueError, HTTPException) as exc:
             message = exc.detail if isinstance(exc, HTTPException) else str(exc)
             errors.append({"name": name, "type": item.type, "message": str(message)})
+
     if errors:
         severity = "ERROR" if len(errors) == len(request.requests) and request.requests else "WARNING"
         diagnostics.record(
@@ -3018,13 +2933,12 @@ def pipscript_data(request: PipscriptDataBatchRequest) -> dict[str, object]:
             service="/api/pipscript/data",
             error_code="PIP-PIPSCRIPT-DATA-001",
             message=f"{len(errors)} Pipscript data request(s) failed.",
-            account_id=request.account_id,
-            broker=account.broker,
             technical_detail=json.dumps(errors, ensure_ascii=False),
         )
     else:
-        diagnostics.resolve(error_code="PIP-PIPSCRIPT-DATA-001", account_id=request.account_id)
+        diagnostics.resolve(error_code="PIP-PIPSCRIPT-DATA-001")
     return {"history": history_data, "quotes": quotes_data, "errors": errors}
+
 
 def _dhan_quote(account_id: int, symbol: str) -> Quote:
     account, client_id, _, _ = broker_accounts.get_account_credentials(account_id)
@@ -3088,31 +3002,7 @@ def quote(
             diagnostics.resolve(error_code="PIP-MARKET-MASTER-003", symbol=original)
             return result
 
-        if account_id is None:
-            raise HTTPException(status_code=409, detail="Select a connected broker account before loading market data.")
-        account, _, _, _ = broker_accounts.get_account_credentials(account_id)
-        access_token = broker_accounts.get_access_token(account_id)
-        if not access_token:
-            raise HTTPException(status_code=409, detail="Selected broker account is not connected.")
-        if account.broker == "dhan":
-            return _dhan_quote(account_id, original)
-        selected_provider = _market_data_provider_for_account(account_id)
-        api_symbol = resolve_api_symbol(original)
-        if not api_symbol:
-            raise unresolved_symbol_error(original)
-        try:
-            result = selected_provider.get_quote(api_symbol)
-        except ValueError as first_error:
-            candidates = _master_symbol_candidates(original)
-            last_error = first_error
-            result = None
-            for candidate in candidates:
-                if candidate == api_symbol:
-                    continue
-                try:
-                    result = selected_provider.get_quote(candidate)
-                    break
-                except ValueError as exc:
+        # Broker accounts are for trading only.\n        return result\n    except ValueError as exc:
                     last_error = exc
             if result is None:
                 raise last_error
@@ -3133,185 +3023,45 @@ def quote(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@app.websocket("/api/ws/quotes")
-async def quotes_websocket(websocket: WebSocket) -> None:
-    if auth.get_user(websocket.cookies.get(auth.SESSION_COOKIE)) is None:
-        await websocket.close(code=1008, reason="Authentication required.")
-        return
-
-    await websocket.accept()
-    queue: asyncio.Queue = asyncio.Queue(maxsize=2000)
-    stream: FyersWatchlistStream | None = None
-    selected_account_id: int | None = None
-    sender_task = asyncio.create_task(_quote_ws_sender(websocket, queue))
-
-    try:
-        while True:
-            message = await websocket.receive_json()
-            if not isinstance(message, dict) or message.get("action") != "subscribe":
-                continue
-
-            raw_account_id = message.get("account_id")
-            try:
-                account_id = int(raw_account_id)
-            except (TypeError, ValueError):
-                await websocket.send_json({
-                    "type": "status",
-                    "status": "error",
-                    "message": "A connected broker account is required.",
-                })
-                continue
-
-            if selected_account_id is not None and account_id != selected_account_id:
-                await websocket.send_json({
-                    "type": "status",
-                    "status": "error",
-                    "message": "Open a new quote session when changing broker accounts.",
-                })
-                continue
-
-            try:
-                account, _, _, _ = broker_accounts.get_account_credentials(account_id)
-                access_token = broker_accounts.get_access_token(account_id)
-                if not access_token:
-                    raise ValueError("Selected broker account is not connected.")
-
-                if account.broker != "fyers":
-                    await websocket.send_json({
-                        "type": "status",
-                        "status": "polling",
-                        "message": "Live socket is unavailable for this broker; HTTP quote polling remains active.",
-                    })
-                    selected_account_id = account_id
-                    if stream is not None:
-                        stream.remove_client(queue)
-                        stream = None
-                    continue
-
-                selected_provider = _market_data_provider_for_account(account_id)
-                if not isinstance(selected_provider, FyersMarketDataProvider):
-                    raise ValueError("Selected account does not provide FYERS market data.")
-
-                if stream is None:
-                    stream = FyersWatchlistStream(selected_provider)
-                selected_account_id = account_id
-
-                symbols = message.get("symbols") or []
-                if not isinstance(symbols, list):
-                    raise ValueError("symbols must be an array.")
-                await stream.update_client(queue, [str(item) for item in symbols])
-                diagnostics.resolve(error_code="PIP-MARKET-WS-001", account_id=account_id)
-                diagnostics.resolve(error_code="PIP-MARKET-WS-002", account_id=account_id)
-            except (ValueError, HTTPException) as exc:
-                detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
-                diagnostics.record(
-                    severity="WARNING",
-                    category="MARKET_DATA",
-                    component="WebSocket",
-                    service="/api/ws/quotes",
-                    error_code="PIP-MARKET-WS-001",
-                    message=str(detail),
-                    account_id=selected_account_id,
-                    technical_detail=f"{type(exc).__name__}: {detail}",
-                )
-                await websocket.send_json({
-                    "type": "status",
-                    "status": "error",
-                    "message": str(detail),
-                })
-
-    except WebSocketDisconnect as exc:
-        if getattr(exc, "code", 1000) not in {1000, 1001}:
-            diagnostics.record(
-                severity="WARNING",
-                category="MARKET_DATA",
-                component="WebSocket",
-                service="/api/ws/quotes",
-                error_code="PIP-MARKET-WS-002",
-                message=f"Quote WebSocket disconnected unexpectedly (code {getattr(exc, 'code', 'unknown')}).",
-                account_id=selected_account_id,
-            )
-    finally:
-        if stream is not None:
-            stream.remove_client(queue)
-        sender_task.cancel()
-
-
-async def _quote_ws_sender(websocket: WebSocket, queue: asyncio.Queue) -> None:
-    while True:
-        payload = await queue.get()
-        await websocket.send_json(payload)
-
-
 @app.get("/api/quotes", response_model=list[Quote])
 def quotes(
     symbols: str = Query(..., min_length=1, max_length=30000),
     account_id: int | None = Query(default=None, ge=1),
 ) -> list[Quote]:
     requested = [item.strip().upper() for item in symbols.split(",") if item.strip()]
-    if configured_source() != "broker":
-        source = configured_source()
-        try:
-            results = market_data_master.get_quotes(requested)
-        except Exception as exc:
-            logger.exception(
-                "Primary market-data quotes failed: source=%s symbols=%s",
-                source, requested[:20],
-            )
-            diagnostics.record(
-                severity="ERROR",
-                category="MARKET_DATA",
-                component="Primary Market Data",
-                service="/api/quotes",
-                error_code="PIP-MARKET-MASTER-004",
-                message=f"{source} watchlist quotes failed.",
-                technical_detail=f"{type(exc).__name__}: {exc}",
-            )
-            raise HTTPException(
-                status_code=503,
-                detail=f"{source} market data quotes failed: {exc}",
-            ) from exc
-        diagnostics.resolve(error_code="PIP-MARKET-MASTER-004")
-        return results
-    selected_provider = _market_data_provider_for_account(account_id)
+    source = configured_source()
     try:
-        results = get_quotes_for_symbols(requested, selected_provider)
-        broker_name = str(getattr(selected_provider, "broker", "") or "unknown")
-        missing = [symbol for symbol in requested if symbol not in {item.symbol.upper() for item in results}]
-        if requested and not results:
-            diagnostics.record(
-                severity="ERROR", category="MARKET_DATA", component="Quotes API",
-                service="/api/quotes", error_code="PIP-MARKET-QUOTES-001",
-                message=f"No quotes were returned for the {len(requested)} requested symbol(s).",
-                account_id=account_id, broker=broker_name,
-                technical_detail=", ".join(requested[:20]),
-            )
-        elif missing:
-            diagnostics.record(
-                severity="WARNING", category="MARKET_DATA", component="Quotes API",
-                service="/api/quotes", error_code="PIP-MARKET-QUOTES-002",
-                message=f"{len(missing)} requested symbol(s) did not return quotes.",
-                account_id=account_id, broker=broker_name,
-                technical_detail=", ".join(missing[:20]),
-            )
-        else:
-            diagnostics.resolve(error_code="PIP-MARKET-QUOTES-001", account_id=account_id)
-            diagnostics.resolve(error_code="PIP-MARKET-QUOTES-002", account_id=account_id)
-        return results
-    except Exception:
-        logger.exception("Market-data quotes failed: account_id=%s broker=%s symbols=%s", account_id, getattr(selected_provider, "broker", "unknown"), requested[:20])
-        raise
+        results = market_data_master.get_quotes(requested)
+    except Exception as exc:
+        logger.exception(
+            "Primary market-data quotes failed: source=%s symbols=%s",
+            source, requested[:20],
+        )
+        diagnostics.record(
+            severity="ERROR",
+            category="MARKET_DATA",
+            component="Primary Market Data",
+            service="/api/quotes",
+            error_code="PIP-MARKET-MASTER-004",
+            message=f"{source} watchlist quotes failed.",
+            technical_detail=f"{type(exc).__name__}: {exc}",
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"{source} market data quotes failed: {exc}",
+        ) from exc
+    diagnostics.resolve(error_code="PIP-MARKET-MASTER-004")
+    return results
 
 
 @app.post("/api/quotes", response_model=list[Quote])
 def quotes_post(request: QuotesRequest) -> list[Quote]:
     requested = [item.strip().upper() for item in request.symbols if item.strip()]
-    if configured_source() != "broker":
+    try:
         return market_data_master.get_quotes(requested)
-    if request.account_id is None:
-        raise HTTPException(status_code=409, detail="Select a connected broker account before loading market data.")
-    selected_provider = _market_data_provider_for_account(request.account_id)
-    return get_quotes_for_symbols(requested, selected_provider)
+    except Exception as exc:
+        logger.exception("Primary market-data POST quotes failed: source=%s symbols=%s", configured_source(), requested[:20])
+        raise HTTPException(status_code=503, detail=f"{configured_source()} market data quotes failed: {exc}") from exc
 
 
 def get_quotes_for_symbols(requested: list[str], selected_provider=None) -> list[Quote]:

@@ -171,6 +171,10 @@ def _challenge_hash(challenge: str) -> str:
     return hashlib.sha256(challenge.encode("utf-8")).hexdigest()
 
 
+def _email_hash(email: str) -> bytes:
+    return hashlib.sha256(str(email).strip().lower().encode("utf-8")).digest()
+
+
 def _secret_exists(db: Session, user_id: int) -> TotpCredential | None:
     return db.scalar(
         select(TotpCredential).where(TotpCredential.user_id == int(user_id))
@@ -355,7 +359,8 @@ def request_disable(user_id: int, code: str) -> dict[str, object]:
         db.add(
             TotpDisableChallenge(
                 user_id=int(user_id),
-                token_hash=token_hash,
+                token_hash=token_hash.encode("ascii"),
+                email_hash=_email_hash(email),
                 expires_at=now + timedelta(seconds=TOTP_DISABLE_TTL_SECONDS),
                 sent_at=now,
             )
@@ -415,6 +420,14 @@ def confirm_disable(token: str) -> dict[str, object]:
             db.delete(challenge)
             db.commit()
             raise ValueError("Email verification is required before disabling the authenticator app.")
+
+        if not hmac.compare_digest(
+            bytes(challenge.email_hash),
+            _email_hash(str(user.email)),
+        ):
+            db.delete(challenge)
+            db.commit()
+            raise ValueError("This TOTP disable confirmation is no longer valid. Request a new confirmation email.")
 
         credential = _secret_exists(db, int(user.id))
         if credential is None or not credential.enabled:

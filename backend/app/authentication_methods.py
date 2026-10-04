@@ -21,5 +21,8 @@ def require_another_primary_method(db, user_id: int, method_being_removed: str) 
     methods = primary_authentication_methods(db, user_id)
     if not [method for method in methods if method != method_being_removed]:
         raise ValueError(
-            "You cannot remove your last sign-in method. Add another sign-in method first."
+            "This is your only sign-in method. Add another sign-in method first "
+            "(another passkey, a password, or a supported OAuth sign-in) before removing it. "
+            "Authenticator App (TOTP), recovery codes, and email verification are additional "
+            "security/recovery methods and do not replace a primary sign-in method."
         )

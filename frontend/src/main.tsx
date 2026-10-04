@@ -2565,7 +2565,6 @@ json.dumps(_result)`;
               chartType={chartType}
               dark={dark}
               symbol={symbol}
-              accountId={selectedAccountId}
               timeframe={timeframe}
               range={chartRange}
               activeDrawingTool={activeDrawingTool}

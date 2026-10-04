@@ -443,6 +443,72 @@ def oauth_callback(
     return response
 
 
+@app.get("/api/security/sessions")
+def security_sessions(request: Request) -> dict[str, object]:
+    user = _request_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    token = request.cookies.get(auth.SESSION_COOKIE)
+    try:
+        sessions = auth.list_sessions(int(user["id"]), token)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"sessions": sessions}
+
+
+@app.delete("/api/security/sessions/{session_id}")
+def security_revoke_session(session_id: int, request: Request, response: Response) -> dict[str, object]:
+    user = _request_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    token = request.cookies.get(auth.SESSION_COOKIE)
+    try:
+        sessions = auth.list_sessions(int(user["id"]), token)
+        target = next((item for item in sessions if int(item["id"]) == session_id), None)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        revoked = auth.revoke_session(int(user["id"]), session_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if not revoked:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    security_audit.record(
+        "session_revoke",
+        username=str(user["username"]),
+        success=True,
+    )
+    if bool(target["current"]):
+        response.delete_cookie(
+            auth.SESSION_COOKIE,
+            path="/",
+            secure=SESSION_COOKIE_SECURE,
+            httponly=True,
+            samesite="lax",
+        )
+    return {"revoked": True, "current": bool(target["current"])}
+
+
+@app.post("/api/security/sessions/logout-others")
+def security_logout_other_sessions(request: Request) -> dict[str, object]:
+    user = _request_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    try:
+        count = auth.revoke_other_sessions(
+            int(user["id"]),
+            request.cookies.get(auth.SESSION_COOKIE),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    security_audit.record(
+        "logout_other_sessions",
+        username=str(user["username"]),
+        success=True,
+    )
+    return {"revoked_sessions": count}
+
+
 @app.post("/api/auth/logout")
 def auth_logout(request: Request, response: Response) -> dict[str, bool]:
     # Logout must be a fast, single session-revocation operation. Do not call

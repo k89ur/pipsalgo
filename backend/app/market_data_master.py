@@ -79,6 +79,13 @@ class _YFinanceProvider:
 
     def _ticker(self, symbol: str):
         import yfinance as yf
+        # Keep Yahoo requests quiet and bounded. Recent yfinance versions expose
+        # network retries globally; guard this so older installed versions still work.
+        try:
+            yf.config.network.retries = 2
+            yf.config.debug.hide_exceptions = False
+        except AttributeError:
+            pass
         return yf.Ticker(_symbol_for_yfinance(symbol))
 
     def get_history(self, symbol: str, timeframe: str, limit: int, *, start=None, end=None) -> list[Candle]:
@@ -88,7 +95,15 @@ class _YFinanceProvider:
         if interval is None:
             raise ValueError(f"Unsupported timeframe: {timeframe}")
 
-        kwargs = {"interval": interval, "auto_adjust": False, "actions": False, "progress": False}
+        kwargs = {
+            "interval": interval,
+            "auto_adjust": False,
+            "actions": False,
+            "progress": False,
+            "timeout": 20,
+            "raise_errors": True,
+            "repair": False,
+        }
         if start or end:
             kwargs["start"] = start.isoformat() if start else None
             kwargs["end"] = (end + timedelta(days=1)).isoformat() if end else None
@@ -106,7 +121,16 @@ class _YFinanceProvider:
     def get_quote(self, symbol: str) -> Quote:
         clean = symbol.strip().upper()
         ticker = self._ticker(clean)
-        frame = ticker.history(period="5d", interval="1d", auto_adjust=False, actions=False, progress=False)
+        frame = ticker.history(
+            period="5d",
+            interval="1d",
+            auto_adjust=False,
+            actions=False,
+            progress=False,
+            timeout=20,
+            raise_errors=True,
+            repair=False,
+        )
         if frame is None or frame.empty:
             raise ValueError(f"No quote returned for {clean} from yfinance.")
         if hasattr(frame.columns, "levels"):

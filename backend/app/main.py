@@ -390,6 +390,10 @@ class EmailPayload(BaseModel):
     email: str
 
 
+class EmailVerificationPayload(BaseModel):
+    token: str
+
+
 class PasswordResetRequestPayload(BaseModel):
     email: str
 
@@ -829,19 +833,14 @@ def email_resend(request: Request) -> dict[str, object]:
     return result
 
 
-@app.get("/api/auth/email/verify")
-def email_verify(token: str = Query(default="")) -> Response:
+@app.post("/api/auth/email/verify")
+def email_verify(payload: EmailVerificationPayload) -> dict[str, object]:
     try:
-        email_verification.verify(token)
-    except ValueError:
-        return RedirectResponse(
-            url=f"{PIPSGOX_WEB_URL}/?email_verified=failed",
-            status_code=303,
-        )
-    return RedirectResponse(
-        url=f"{PIPSGOX_WEB_URL}/?email_verified=success",
-        status_code=303,
-    )
+        result = email_verification.verify(payload.token)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    security_audit.record("email_verification_completed", success=True)
+    return result
 
 
 @app.get("/api/auth/totp")

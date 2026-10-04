@@ -1948,7 +1948,7 @@ json.dumps(_result)`;
   }, [watchlist, selectedAccountId]);
 
   useEffect(() => {
-    if (!watchlist.length || !selectedAccountId) {
+    if (!watchlist.length) {
       setLiveQuotes({});
       return;
     }

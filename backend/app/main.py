@@ -28,6 +28,7 @@ from app.providers.fyers import FyersMarketDataProvider
 from app import auth, broker_accounts, security_audit, diagnostics, oidc, passkey_service, totp_service, recovery_codes, email_verification, account_recovery
 from app.broker_manager import BrokerManager
 from app.ma44_scanner import scanner as ma44_scanner
+from app.market_data_master import configured_source, market_data_master
 
 load_dotenv()
 
@@ -2745,6 +2746,16 @@ class _DhanMarketDataAdapter:
         return [self.get_quote(symbol) for symbol in symbols]
 
 
+@app.get("/api/market-data/source")
+def market_data_source() -> dict[str, object]:
+    source = configured_source()
+    return {
+        "source": source,
+        "available_sources": ["yfinance", "nse", "bse", "broker"],
+        "broker_independent": source != "broker",
+    }
+
+
 def _market_data_provider_for_account(account_id: int | None):
 
     if account_id is None:
@@ -2784,6 +2795,15 @@ def history(
     account_id: int | None = Query(default=None, ge=1),
 ) -> list[Candle]:
     try:
+        # Primary market data is independent from broker trading accounts.
+        if configured_source() != "broker":
+            candles = market_data_master.get_history(
+                symbol, timeframe, limit, start=from_date, end=to_date
+            )
+            if not candles:
+                raise ValueError(f"No historical data returned for {symbol.strip().upper()}.")
+            return candles
+
         if account_id is None:
             raise HTTPException(status_code=409, detail="Select a connected broker account before loading market data.")
         account, _, _, _ = broker_accounts.get_account_credentials(account_id)
@@ -3000,6 +3020,9 @@ def quote(
 ) -> Quote:
     try:
         original = symbol.strip().upper()
+        if configured_source() != "broker":
+            return market_data_master.get_quote(original)
+
         if account_id is None:
             raise HTTPException(status_code=409, detail="Select a connected broker account before loading market data.")
         account, _, _, _ = broker_accounts.get_account_credentials(account_id)
@@ -3161,6 +3184,8 @@ def quotes(
     account_id: int | None = Query(default=None, ge=1),
 ) -> list[Quote]:
     requested = [item.strip().upper() for item in symbols.split(",") if item.strip()]
+    if configured_source() != "broker":
+        return market_data_master.get_quotes(requested)
     selected_provider = _market_data_provider_for_account(account_id)
     try:
         results = get_quotes_for_symbols(requested, selected_provider)
@@ -3193,10 +3218,12 @@ def quotes(
 
 @app.post("/api/quotes", response_model=list[Quote])
 def quotes_post(request: QuotesRequest) -> list[Quote]:
+    requested = [item.strip().upper() for item in request.symbols if item.strip()]
+    if configured_source() != "broker":
+        return market_data_master.get_quotes(requested)
     if request.account_id is None:
         raise HTTPException(status_code=409, detail="Select a connected broker account before loading market data.")
     selected_provider = _market_data_provider_for_account(request.account_id)
-    requested = [item.strip().upper() for item in request.symbols if item.strip()]
     return get_quotes_for_symbols(requested, selected_provider)
 
 

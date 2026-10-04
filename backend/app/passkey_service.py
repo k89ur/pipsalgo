@@ -24,7 +24,7 @@ from webauthn.helpers.structs import (
 )
 
 from app.db.database import SessionLocal
-from app.db.models import Passkey, PasskeyChallenge, User
+from app.db.models import Passkey, PasskeyChallenge, PasskeySignupChallenge, User
 
 
 CHALLENGE_TTL_SECONDS = 5 * 60
@@ -162,6 +162,154 @@ def _consume_challenge(
         row.used_at = datetime.now(timezone.utc)
         db.commit()
         return True
+
+
+def signup_registration_options(username: str, origin: str | None = None) -> dict[str, object]:
+    """Create a short-lived WebAuthn registration ceremony without an existing account."""
+    username = username.strip()
+    if len(username) < 3 or len(username) > 64:
+        raise ValueError("Username must be between 3 and 64 characters.")
+    if any(char.isspace() for char in username):
+        raise ValueError("Username cannot contain spaces.")
+
+    SessionLocalFactory = _require_db()
+    with SessionLocalFactory() as db:
+        _cleanup_expired_challenges(db)
+        existing = db.scalar(select(User.id).where(User.username == username))
+        if existing is not None:
+            raise ValueError("Username already exists.")
+
+        # A pending reservation prevents two simultaneous passkey signups
+        # from racing for the same username.
+        pending = db.scalar(
+            select(PasskeySignupChallenge.id).where(
+                PasskeySignupChallenge.username == username,
+                PasskeySignupChallenge.used_at.is_(None),
+                PasskeySignupChallenge.expires_at > datetime.now(timezone.utc),
+            )
+        )
+        if pending is not None:
+            raise ValueError("A passkey signup is already in progress for this username.")
+
+        user_handle = _new_user_handle()
+        options = generate_registration_options(
+            rp_id=rp_id(origin),
+            rp_name=rp_name(),
+            user_id=user_handle,
+            user_name=username,
+            user_display_name=username,
+            timeout=WEBAUTHN_TIMEOUT_MS,
+            authenticator_selection=AuthenticatorSelectionCriteria(
+                resident_key=ResidentKeyRequirement.REQUIRED,
+                user_verification=UserVerificationRequirement.REQUIRED,
+            ),
+        )
+        now = datetime.now(timezone.utc)
+        db.add(
+            PasskeySignupChallenge(
+                challenge=bytes(options.challenge),
+                username=username,
+                webauthn_user_id=user_handle,
+                created_at=now,
+                expires_at=now + timedelta(seconds=CHALLENGE_TTL_SECONDS),
+            )
+        )
+        db.commit()
+        return json.loads(options_to_json(options))
+
+
+def verify_passkey_signup(credential: dict[str, object], origin: str | None = None) -> tuple[int, dict[str, object]]:
+    """Verify a passkey-only signup and atomically create the account."""
+    if not isinstance(credential, dict):
+        raise ValueError("Invalid passkey credential.")
+
+    try:
+        raw_id = base64url_to_bytes(str(credential["rawId"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Invalid passkey credential ID.") from exc
+
+    challenge = _challenge_from_client_data(credential, "webauthn.create")
+    SessionLocalFactory = _require_db()
+
+    # Verify the credential cryptographically before consuming the challenge.
+    with SessionLocalFactory() as db:
+        pending = db.scalar(
+            select(PasskeySignupChallenge)
+            .where(
+                PasskeySignupChallenge.challenge == challenge,
+                PasskeySignupChallenge.used_at.is_(None),
+                PasskeySignupChallenge.expires_at > datetime.now(timezone.utc),
+            )
+        )
+        if pending is None:
+            raise ValueError("Passkey signup request expired or was already used.")
+        expected_user_id = bytes(pending.webauthn_user_id)
+
+    try:
+        verification = verify_registration_response(
+            credential=credential,
+            expected_challenge=challenge,
+            expected_origin=origin or _web_origin(),
+            expected_rp_id=rp_id(origin),
+            require_user_verification=True,
+        )
+    except Exception as exc:
+        raise ValueError("Passkey registration could not be verified.") from exc
+
+    if not verification.user_verified:
+        raise ValueError("User verification is required for passkey registration.")
+    if verification.credential_id != raw_id:
+        raise ValueError("Passkey credential ID mismatch.")
+
+    with SessionLocalFactory() as db:
+        pending = db.scalar(
+            select(PasskeySignupChallenge)
+            .where(
+                PasskeySignupChallenge.challenge == challenge,
+                PasskeySignupChallenge.used_at.is_(None),
+                PasskeySignupChallenge.expires_at > datetime.now(timezone.utc),
+            )
+            .with_for_update()
+        )
+        if pending is None:
+            raise ValueError("Passkey signup request expired or was already used.")
+
+        if bytes(pending.webauthn_user_id) != expected_user_id:
+            raise ValueError("Passkey signup user handle mismatch.")
+
+        username = str(pending.username)
+        if db.scalar(select(User.id).where(User.username == username)) is not None:
+            raise ValueError("Username already exists.")
+
+        if db.scalar(select(Passkey.id).where(Passkey.credential_id == verification.credential_id)) is not None:
+            raise ValueError("This passkey is already registered.")
+
+        user = User(
+            username=username,
+            webauthn_user_id=expected_user_id,
+            last_login_at=datetime.now(timezone.utc),
+        )
+        db.add(user)
+        db.flush()
+
+        db.add(
+            Passkey(
+                user_id=int(user.id),
+                credential_id=verification.credential_id,
+                public_key=verification.credential_public_key,
+                sign_count=verification.sign_count,
+                device_name=_device_name(credential),
+            )
+        )
+        pending.used_at = datetime.now(timezone.utc)
+        db.commit()
+
+        return int(user.id), {
+            "id": int(user.id),
+            "username": username,
+            "email": user.email,
+            "display_name": user.display_name,
+        }
 
 
 def registration_options(user_id: int, origin: str | None = None) -> dict[str, object]:

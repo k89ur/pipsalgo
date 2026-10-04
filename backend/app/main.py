@@ -411,6 +411,10 @@ class TotpCodePayload(BaseModel):
     code: str
 
 
+class TotpDisableConfirmationPayload(BaseModel):
+    token: str
+
+
 class TotpLoginPayload(BaseModel):
     challenge_id: str
     code: str
@@ -883,18 +887,52 @@ def totp_confirm(payload: TotpCodePayload, request: Request) -> dict[str, bool]:
 
 
 @app.post("/api/auth/totp/disable")
-def totp_disable(payload: TotpCodePayload, request: Request) -> dict[str, bool]:
+def totp_disable(payload: TotpCodePayload, request: Request) -> dict[str, object]:
     user = _request_user(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required.")
     try:
-        totp_service.disable(int(user["id"]), payload.code)
-        recovery_codes.invalidate_all(int(user["id"]))
+        result = totp_service.request_disable(int(user["id"]), payload.code)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    security_audit.record("totp_disable", username=str(user["username"]), success=True)
+    except Exception:
+        logger.exception("TOTP disable confirmation email failed.")
+        raise HTTPException(
+            status_code=503,
+            detail="Email delivery is temporarily unavailable. Please try again later.",
+        )
+
+    security_audit.record(
+        "totp_disable_confirmation_sent",
+        username=str(user["username"]),
+        success=True,
+    )
+    return {
+        "enabled": True,
+        "pending_confirmation": True,
+        "email": result["email"],
+        "expires_at": result["expires_at"],
+    }
+
+
+@app.post("/api/auth/totp/disable/confirm")
+def totp_disable_confirm(
+    payload: TotpDisableConfirmationPayload,
+) -> dict[str, bool]:
+    try:
+        result = totp_service.confirm_disable(payload.token)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    security_audit.record(
+        "totp_disable",
+        username=str(result["username"]),
+        success=True,
+    )
     return {"enabled": False}
 
 

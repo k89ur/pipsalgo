@@ -51,6 +51,7 @@ export function SecuritySettings({ onClose }: SecuritySettingsProps) {
   const [totpSetup, setTotpSetup] = useState<TotpSetup | null>(null);
   const [totpCode, setTotpCode] = useState("");
   const [totpDisableCode, setTotpDisableCode] = useState("");
+  const [totpDisablePending, setTotpDisablePending] = useState(false);
   const [recoveryTotpCode, setRecoveryTotpCode] = useState("");
   const [generatedRecoveryCodes, setGeneratedRecoveryCodes] = useState<string[]>([]);
   const [showRecoveryGenerate, setShowRecoveryGenerate] = useState(false);
@@ -325,7 +326,11 @@ export function SecuritySettings({ onClose }: SecuritySettingsProps) {
       setError("Enter the current 6-digit authenticator code.");
       return;
     }
-    if (!window.confirm("Disable the authenticator app? Existing recovery codes will also be invalidated.")) return;
+    if (!emailStatus.email || !emailStatus.verified) {
+      setError("Verify your account email before disabling the authenticator app.");
+      return;
+    }
+    if (!window.confirm("This will email a confirmation link to your verified email address. The authenticator will remain enabled until you confirm that email.")) return;
 
     setTotpBusy(true);
     setError("");
@@ -337,15 +342,12 @@ export function SecuritySettings({ onClose }: SecuritySettingsProps) {
         body: JSON.stringify({ code }),
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(String(payload?.detail || "Could not disable authenticator."));
-      setTotp({ enabled: false, configured: false });
-      setRecoveryRemaining(0);
+      if (!response.ok) throw new Error(String(payload?.detail || "Could not start authenticator disable confirmation."));
       setTotpDisableCode("");
-      setGeneratedRecoveryCodes([]);
-      setShowRecoveryGenerate(false);
-      setMessage("Authenticator app disabled and recovery codes invalidated.");
+      setTotpDisablePending(true);
+      setMessage("Confirmation email sent. Open it to finish disabling the authenticator. TOTP remains enabled until confirmation.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not disable authenticator.");
+      setError(err instanceof Error ? err.message : "Could not start authenticator disable confirmation.");
     } finally {
       setTotpBusy(false);
     }
@@ -615,20 +617,36 @@ export function SecuritySettings({ onClose }: SecuritySettingsProps) {
                     </button>
                   </div>
                 )}
-                <div className="security-code-row">
-                  <input
-                    value={totpDisableCode}
-                    onChange={(event) => setTotpDisableCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                    maxLength={6}
-                    placeholder="Current code"
-                    aria-label="Current authenticator code"
-                  />
-                  <button className="security-danger" disabled={totpBusy} onClick={() => void disableTotp()}>
-                    {totpBusy ? "WORKING..." : "DISABLE"}
-                  </button>
-                </div>
+                {totpDisablePending ? (
+                  <div className="security-warning">
+                    A disable confirmation was requested. Check <strong>{emailStatus.email}</strong> and open the confirmation link. The authenticator remains enabled until the email confirmation succeeds.
+                  </div>
+                ) : (
+                  <div className="security-code-row">
+                    <input
+                      value={totpDisableCode}
+                      onChange={(event) => setTotpDisableCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      maxLength={6}
+                      placeholder="Current code"
+                      aria-label="Current authenticator code"
+                      disabled={!emailStatus.verified}
+                    />
+                    <button
+                      className="security-danger"
+                      disabled={totpBusy || !emailStatus.verified}
+                      onClick={() => void disableTotp()}
+                    >
+                      {totpBusy ? "SENDING..." : "DISABLE"}
+                    </button>
+                  </div>
+                )}
+                {!emailStatus.verified && (
+                  <div className="security-note">
+                    A verified email address is required to disable TOTP. This prevents a stolen authenticated session alone from removing the second factor.
+                  </div>
+                )}
               </div>
 
               {generatedRecoveryCodes.length > 0 && (

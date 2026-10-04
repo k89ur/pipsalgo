@@ -16,6 +16,7 @@ MARKET_OPEN = dt_time(9, 15)
 MARKET_CLOSE = dt_time(15, 30)
 EOD_START = dt_time(15, 35)
 REFRESH_SECONDS = 60
+INITIAL_START_DELAY_SECONDS = 15
 HISTORY_LIMIT = 260
 TREND_POINTS = 21
 
@@ -429,6 +430,12 @@ class MA44Scanner:
             )
 
     def _run(self) -> None:
+        # Give the terminal's chart, header quote, and watchlist a quiet
+        # startup window. Scanner work remains automatic, but it must not
+        # compete with the first user-visible market-data requests.
+        if self._stop.wait(INITIAL_START_DELAY_SECONDS):
+            return
+
         while not self._stop.is_set():
             try:
                 now = _now()

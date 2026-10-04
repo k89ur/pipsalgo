@@ -1959,6 +1959,30 @@ def ma44_scanner_status(
 
 
 @app.get("/api/symbols/search", response_model=list[SymbolSearchResult])
+def search_nse_symbols(query: str, limit: int = 12) -> list[SymbolSearchResult]:
+    term = query.strip().upper()
+    if not term:
+        return []
+
+    # Search the current NSE equity universe. This keeps symbol discovery
+    # independent from broker/FYERS APIs while using the same market-data
+    # boundary as the scanner.
+    from app.nse_bhavcopy import fetch_latest
+
+    _, rows = fetch_latest()
+    matches = sorted(symbol for symbol in rows if term in symbol.upper())
+    matches.sort(key=lambda symbol: (0 if symbol == term else 1 if symbol.startswith(term) else 2, symbol))
+    return [
+        SymbolSearchResult(
+            symbol=symbol,
+            name=symbol,
+            exchange="NSE",
+            api_symbol=symbol,
+        )
+        for symbol in matches[:limit]
+    ]
+
+
 def symbol_search(
     q: str = Query(default="", max_length=80),
     limit: int = Query(default=12, ge=1, le=25),

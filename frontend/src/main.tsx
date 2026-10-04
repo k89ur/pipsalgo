@@ -1827,6 +1827,7 @@ json.dumps(_result)`;
   useEffect(() => {
     let cancelled = false;
     let firstLoad = true;
+    let requestInFlight = false;
 
     // Never carry the previous symbol's quote into the new symbol header.
     setQuote(null);
@@ -1834,6 +1835,8 @@ json.dumps(_result)`;
     setQuoteError(false);
 
     const loadQuote = async () => {
+      if (requestInFlight) return;
+      requestInFlight = true;
       try {
         const response = await apiFetch("/api/quote?symbol=" + encodeURIComponent(chartApiSymbol || symbol),
           { cache: "no-store" },
@@ -1857,6 +1860,7 @@ json.dumps(_result)`;
           setQuoteLoading(false);
           firstLoad = false;
         }
+        requestInFlight = false;
       }
     };
 
@@ -1878,8 +1882,11 @@ json.dumps(_result)`;
     }
 
     let cancelled = false;
+    let requestInFlight = false;
 
     const loadWatchlistQuotes = async () => {
+      if (requestInFlight) return;
+      requestInFlight = true;
       try {
         const symbols = watchlist.map((item) => item.symbol).join(",");
         const response = await apiFetch("/api/quotes?symbols=" + encodeURIComponent(symbols),
@@ -1917,11 +1924,14 @@ json.dumps(_result)`;
         });
       } catch {
         // Keep existing values when a polling request fails.
+      } finally {
+        requestInFlight = false;
       }
     };
 
     void loadWatchlistQuotes();
-    const timer = window.setInterval(() => void loadWatchlistQuotes(), 5000);
+    const refreshMs = watchlist.length > 250 ? 15000 : 5000;
+    const timer = window.setInterval(() => void loadWatchlistQuotes(), refreshMs);
 
     return () => {
       cancelled = true;
@@ -2020,7 +2030,7 @@ json.dumps(_result)`;
 
     const result = searchResults[0];
     if (result) {
-      selectSymbol(result.symbol);
+      selectSymbol(result.symbol, result.api_symbol);
       setSearchOpen(false);
     }
   };
@@ -2031,7 +2041,7 @@ json.dumps(_result)`;
     exchange: string;
     api_symbol: string;
   }) => {
-    selectSymbol(result.symbol);
+    selectSymbol(result.symbol, result.api_symbol);
     setSearchOpen(false);
     setWatchImportMessage(
       watchlist.some((item) => item.symbol === result.symbol)
@@ -2062,38 +2072,18 @@ json.dumps(_result)`;
       ...current,
       { symbol: result.symbol, price: "—", change: "—", apiSymbol: result.api_symbol },
     ]);
-    selectSymbol(result.symbol);
+    selectSymbol(result.symbol, result.api_symbol);
     setSearchOpen(false);
     setWatchImportMessage("Added " + result.symbol + " to " + activeWatchlistName);
     window.setTimeout(() => setWatchImportMessage(""), 2500);
   };
 
-  const selectWatchItem = async (item: WatchItem) => {
-    if (item.apiSymbol) {
-      selectSymbol(item.symbol, item.apiSymbol);
-      return;
-    }
-
-    selectSymbol(item.symbol);
-    try {
-      const response = await apiFetch(`/api/symbols/resolve?symbol=${encodeURIComponent(item.symbol)}&timeframe=${encodeURIComponent(timeframe)}&test_history=true&test_quote=false`,
-        { cache: "no-store" },
-      );
-      if (!response.ok) return;
-      const payload = await response.json() as { selected?: string | null };
-      if (payload.selected) {
-        setWatchlists((current) => ({
-          ...current,
-          [activeWatchlistName]: (current[activeWatchlistName] ?? []).map((watch) =>
-            watch.symbol === item.symbol ? { ...watch, apiSymbol: payload.selected!.toUpperCase() } : watch,
-          ),
-        }));
-        selectSymbol(item.symbol, payload.selected);
-      }
-    } catch {
-      // Chart backend fallback remains available when resolution is unavailable.
-    }
+  const selectWatchItem = (item: WatchItem) => {
+    // Market-data symbols are resolved by the primary provider. Do not call
+    // the removed broker/FYERS symbol-resolution endpoint.
+    selectSymbol(item.symbol, item.apiSymbol);
   };
+
 
   const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -2575,7 +2565,6 @@ json.dumps(_result)`;
               chartType={chartType}
               dark={dark}
               symbol={symbol}
-              accountId={selectedAccountId}
               timeframe={timeframe}
               range={chartRange}
               activeDrawingTool={activeDrawingTool}

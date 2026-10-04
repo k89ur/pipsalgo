@@ -2473,35 +2473,7 @@ json.dumps(_result)`;
                   )}
                 </>
               )
-              {!signingUp && (
-                <button
-                  className="auth-secondary-button"
-                  type="button"
-                  disabled={authBusy}
-                  onClick={() => {
-                    setPasswordResetMode("request");
-                    setPasswordResetToken("");
-                    setPasswordResetMessage("");
-                    setPasswordResetEmail("");
-                    setAuthError("");
-                  }}
-                >
-                  Forgot Password?
-                </button>
-              )}
-              {!signingUp && (
-                <button
-                  className="auth-passkey-button"
-                  type="button"
-                  disabled={!authReady || authBusy || !passkeySupported()}
-                  onClick={() => void signInWithPasskey()}
-                >
-                  <span>⌁</span>
-                  {authBusy ? "AUTHENTICATING..." : "Sign in with Passkey"}
-                  <em>RECOMMENDED</em>
-                </button>
-              )}
-            </>
+            }
           )}
         </form>
       </main>

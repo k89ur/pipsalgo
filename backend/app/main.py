@@ -90,6 +90,9 @@ _LOGIN_WINDOW_SECONDS = 300
 _PASSWORD_RESET_ATTEMPTS: dict[str, tuple[int, float]] = {}
 _PASSWORD_RESET_MAX_ATTEMPTS = 5
 _PASSWORD_RESET_WINDOW_SECONDS = 900
+_PASSKEY_SIGNUP_ATTEMPTS: dict[str, tuple[int, float]] = {}
+_PASSKEY_SIGNUP_MAX_ATTEMPTS = 8
+_PASSKEY_SIGNUP_WINDOW_SECONDS = 900
 _order_idempotency_lock = threading.Lock()
 
 app.add_middleware(
@@ -189,6 +192,86 @@ def auth_status(request: Request) -> dict[str, object]:
         "username": user["username"] if user else None,
         "registration_enabled": True,
     }
+
+
+class PasskeySignupPayload(BaseModel):
+    username: str
+
+
+@app.post("/api/auth/passkey/signup/options")
+def passkey_signup_options(payload: PasskeySignupPayload, request: Request) -> dict[str, object]:
+    ip = request.client.host if request.client else "unknown"
+    now = time.monotonic()
+    attempts, started = _PASSKEY_SIGNUP_ATTEMPTS.get(ip, (0, now))
+    if now - started >= _PASSKEY_SIGNUP_WINDOW_SECONDS:
+        attempts, started = 0, now
+    if attempts >= _PASSKEY_SIGNUP_MAX_ATTEMPTS:
+        raise HTTPException(status_code=429, detail="Too many passkey signup attempts. Try again later.")
+
+    try:
+        return passkey_service.signup_registration_options(
+            payload.username,
+            origin=request.headers.get("origin"),
+        )
+    except ValueError as exc:
+        _PASSKEY_SIGNUP_ATTEMPTS[ip] = (attempts + 1, started)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+class PasskeyCredentialPayload(BaseModel):
+    credential: dict[str, object]
+
+
+@app.post("/api/auth/passkey/signup/verify")
+def passkey_signup_verify(
+    payload: PasskeyCredentialPayload,
+    request: Request,
+    response: Response,
+) -> dict[str, object]:
+    ip = request.client.host if request.client else "unknown"
+    now = time.monotonic()
+    attempts, started = _PASSKEY_SIGNUP_ATTEMPTS.get(ip, (0, now))
+    if now - started >= _PASSKEY_SIGNUP_WINDOW_SECONDS:
+        attempts, started = 0, now
+    if attempts >= _PASSKEY_SIGNUP_MAX_ATTEMPTS:
+        raise HTTPException(status_code=429, detail="Too many passkey signup attempts. Try again later.")
+
+    try:
+        user_id, user = passkey_service.verify_passkey_signup(
+            payload.credential,
+            origin=request.headers.get("origin"),
+        )
+        token = auth.create_session_for_user(
+            user_id,
+            ip_address=ip,
+            user_agent=request.headers.get("user-agent"),
+        )
+    except ValueError as exc:
+        _PASSKEY_SIGNUP_ATTEMPTS[ip] = (attempts + 1, started)
+        security_audit.record("passkey_signup", success=False)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    _PASSKEY_SIGNUP_ATTEMPTS.pop(ip, None)
+    response.set_cookie(
+        auth.SESSION_COOKIE,
+        token,
+        httponly=True,
+        secure=SESSION_COOKIE_SECURE,
+        samesite="lax",
+        max_age=auth.SESSION_TTL_SECONDS,
+        path="/",
+    )
+    security_audit.record(
+        "passkey_signup",
+        username=str(user["username"]),
+        success=True,
+    )
+    _ensure_background_scanners()
+    return {"authenticated": True, **user}
 
 
 @app.post("/api/auth/signup")

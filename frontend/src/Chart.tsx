@@ -674,20 +674,9 @@ export function Chart({
             if (error instanceof DOMException && error.name === "AbortError") return;
             console.error("PIPSGOX history error:", error);
             if (!disposed) {
-              // Only failed symbols trigger the diagnostic request, so normal
-              // chart loads do not incur an extra network call.
-              try {
-                const diagnostic = await apiFetch(`/api/symbols/resolve?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&test_history=true&test_quote=true`,
-                  { cache: "no-store" },
-                );
-                if (diagnostic.ok) {
-                  console.warn("PIPSGOX symbol diagnostic:", await diagnostic.json());
-                } else {
-                  console.warn("PIPSGOX symbol diagnostic HTTP " + diagnostic.status);
-                }
-              } catch (diagnosticError) {
-                console.warn("PIPSGOX symbol diagnostic failed:", diagnosticError);
-              }
+              // The history API records the authoritative market-data
+              // diagnostic. Do not call the removed /api/symbols/resolve
+              // endpoint here; that only masked the original provider error.
               callback([], {
                 forward: false,
                 backward: false,

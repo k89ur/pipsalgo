@@ -175,6 +175,10 @@ def _email_hash(email: str) -> bytes:
     return hashlib.sha256(str(email).strip().lower().encode("utf-8")).digest()
 
 
+def _disable_token_hash(token: str) -> bytes:
+    return hashlib.sha256(token.encode("utf-8")).digest()
+
+
 def _secret_exists(db: Session, user_id: int) -> TotpCredential | None:
     return db.scalar(
         select(TotpCredential).where(TotpCredential.user_id == int(user_id))
@@ -307,7 +311,7 @@ def request_disable(user_id: int, code: str) -> dict[str, object]:
 
     now = datetime.now(timezone.utc)
     raw_token = secrets.token_urlsafe(32)
-    token_hash = _challenge_hash(raw_token)
+    token_hash = _disable_token_hash(raw_token)
 
     with _require_db()() as db:
         user = db.scalar(
@@ -359,7 +363,7 @@ def request_disable(user_id: int, code: str) -> dict[str, object]:
         db.add(
             TotpDisableChallenge(
                 user_id=int(user_id),
-                token_hash=token_hash.encode("ascii"),
+                token_hash=token_hash,
                 email_hash=_email_hash(email),
                 expires_at=now + timedelta(seconds=TOTP_DISABLE_TTL_SECONDS),
                 sent_at=now,
@@ -395,7 +399,7 @@ def confirm_disable(token: str) -> dict[str, object]:
         raise ValueError("Invalid TOTP disable confirmation.")
 
     now = datetime.now(timezone.utc)
-    token_hash = _challenge_hash(token)
+    token_hash = _disable_token_hash(token)
 
     with _require_db()() as db:
         row = db.execute(

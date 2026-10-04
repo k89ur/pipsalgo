@@ -586,12 +586,11 @@ export function Chart({
               symbol,
               timeframe,
               limit: String(pageSize),
-              ...(accountId ? { account_id: String(accountId) } : {}),
             });
 
             // KLineChart calls "forward" when the user reaches the left
-            // boundary. In that direction we ask FYERS for candles strictly
-            // older than the current leftmost candle.
+            // boundary. In that direction request candles older than the
+            // current leftmost candle from the primary market-data source.
             if (type === "forward" && timestamp) {
               params.set("to_date", dateBeforeTimestamp(Number(timestamp)));
             }

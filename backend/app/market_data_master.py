@@ -16,9 +16,9 @@ from typing import Literal
 
 from app.providers.base import Candle, Quote
 
-MarketDataSource = Literal["yfinance", "nse", "bse", "broker"]
+MarketDataSource = Literal["yfinance", "nse", "bse"]
 
-SOURCE_NAMES = ("yfinance", "nse", "bse", "broker")
+SOURCE_NAMES = ("yfinance", "nse", "bse")
 
 
 def configured_source() -> MarketDataSource:
@@ -249,8 +249,6 @@ class MarketDataMaster:
 
     def provider(self):
         source = self.source()
-        if source == "broker":
-            raise ValueError("Market-data source is set to broker; use the connected broker provider.")
         with self._lock:
             provider = self._providers.get(source)
             if provider is not None:

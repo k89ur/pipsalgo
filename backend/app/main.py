@@ -2468,7 +2468,7 @@ def health() -> dict[str, object]:
         "status": "ok",
         "app": "pipsgox",
         "server": "running",
-        "data_provider": "broker_account",
+        "data_provider": configured_source(),
         **readiness,
     }
 

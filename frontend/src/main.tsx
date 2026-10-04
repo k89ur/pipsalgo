@@ -2072,7 +2072,7 @@ json.dumps(_result)`;
       ...current,
       { symbol: result.symbol, price: "—", change: "—", apiSymbol: result.api_symbol },
     ]);
-    selectSymbol(result.symbol);
+    selectSymbol(result.symbol, result.api_symbol);
     setSearchOpen(false);
     setWatchImportMessage("Added " + result.symbol + " to " + activeWatchlistName);
     window.setTimeout(() => setWatchImportMessage(""), 2500);

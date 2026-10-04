@@ -53,17 +53,23 @@ export function StatusCenter({ accountId, embedded = false, onClose }: Props) {
   const [message, setMessage] = useState("");
   const [advanced, setAdvanced] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<number | null>(null);
+  const [marketDataSource, setMarketDataSource] = useState("unknown");
 
   const load = useCallback(async () => {
     const query = accountId ? "?account_id=" + encodeURIComponent(String(accountId)) : "";
-    const [summaryResponse, eventsResponse] = await Promise.all([
+    const [summaryResponse, eventsResponse, sourceResponse] = await Promise.all([
       apiFetch("/api/diagnostics/summary" + query, { cache: "no-store" }),
       apiFetch("/api/diagnostics/events" + query + (query ? "&" : "?") + "limit=100", { cache: "no-store" }),
+      apiFetch("/api/market-data/source", { cache: "no-store" }),
     ]);
     const summaryPayload = await summaryResponse.json().catch(() => ({}));
     const eventsPayload = await eventsResponse.json().catch(() => []);
+    const sourcePayload = await sourceResponse.json().catch(() => ({}));
     if (summaryResponse.ok) setSummary(summaryPayload);
     if (eventsResponse.ok && Array.isArray(eventsPayload)) setEvents(eventsPayload);
+    if (sourceResponse.ok && typeof sourcePayload.source === "string") {
+      setMarketDataSource(sourcePayload.source);
+    }
   }, [accountId]);
 
   useEffect(() => { void load(); }, [load]);
@@ -118,6 +124,7 @@ export function StatusCenter({ accountId, embedded = false, onClose }: Props) {
           <span>OVERALL STATUS</span>
           <strong>{status}</strong>
           <small>{accountId ? "Selected broker account" : "Primary market data · no broker required"}</small>
+          <small>Market data source: <strong>{marketDataSource.toUpperCase()}</strong></small>
         </div>
         <div className="status-stat"><span>CRITICAL</span><strong>{Number(summary?.critical || 0)}</strong></div>
         <div className="status-stat"><span>ERRORS</span><strong>{Number(summary?.errors || 0)}</strong></div>

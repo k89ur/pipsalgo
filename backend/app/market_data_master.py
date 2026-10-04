@@ -111,7 +111,12 @@ class _YFinanceProvider:
             period_map = {"1m": "7d", "3m": "60d", "5m": "60d", "15m": "60d", "30m": "60d", "1h": "730d", "D": "10y", "W": "10y", "M": "20y"}
             kwargs["period"] = period_map.get(timeframe, "10y")
 
-        frame = ticker.history(**kwargs)
+        try:
+            frame = ticker.history(**kwargs)
+        except TypeError:
+            kwargs.pop("raise_errors", None)
+            kwargs.pop("repair", None)
+            frame = ticker.history(**kwargs)
         if frame is None or frame.empty:
             raise ValueError(f"No historical data returned for {symbol.strip().upper()} from yfinance.")
         if hasattr(frame.columns, "levels"):
@@ -133,19 +138,32 @@ class _YFinanceProvider:
         except AttributeError:
             pass
 
-        frame = yf.download(
-            tickers=yahoo_symbols,
-            period="5d",
-            interval="1d",
-            group_by="ticker",
-            auto_adjust=False,
-            actions=False,
-            progress=False,
-            threads=False,
-            timeout=20,
-            repair=False,
-            multi_level_index=True,
-        )
+        try:
+            frame = yf.download(
+                tickers=yahoo_symbols,
+                period="5d",
+                interval="1d",
+                group_by="ticker",
+                auto_adjust=False,
+                actions=False,
+                progress=False,
+                threads=False,
+                timeout=20,
+                repair=False,
+                multi_level_index=True,
+            )
+        except TypeError:
+            frame = yf.download(
+                tickers=yahoo_symbols,
+                period="5d",
+                interval="1d",
+                group_by="ticker",
+                auto_adjust=False,
+                actions=False,
+                progress=False,
+                threads=False,
+                timeout=20,
+            )
         if frame is None or frame.empty:
             raise ValueError("No quote data returned for the requested symbols from yfinance.")
 
@@ -191,16 +209,22 @@ class _YFinanceProvider:
     def get_quote(self, symbol: str) -> Quote:
         clean = symbol.strip().upper()
         ticker = self._ticker(clean)
-        frame = ticker.history(
-            period="5d",
-            interval="1d",
-            auto_adjust=False,
-            actions=False,
-            progress=False,
-            timeout=20,
-            raise_errors=True,
-            repair=False,
-        )
+        history_kwargs = {
+            "period": "5d",
+            "interval": "1d",
+            "auto_adjust": False,
+            "actions": False,
+            "progress": False,
+            "timeout": 20,
+            "raise_errors": True,
+            "repair": False,
+        }
+        try:
+            frame = ticker.history(**history_kwargs)
+        except TypeError:
+            history_kwargs.pop("raise_errors", None)
+            history_kwargs.pop("repair", None)
+            frame = ticker.history(**history_kwargs)
         if frame is None or frame.empty:
             raise ValueError(f"No quote returned for {clean} from yfinance.")
         if hasattr(frame.columns, "levels"):

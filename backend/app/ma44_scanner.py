@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 
-from app import broker_accounts
+from app.market_data_master import configured_source, market_data_master
 
 # Termux installations may not include the system IANA tzdata package.
 # India uses a fixed UTC+05:30 offset year-round, so avoid a ZoneInfo
@@ -42,11 +42,11 @@ def _distance(price: float, ma: float) -> float:
 
 
 class MA44Scanner:
-    """Background, broker-account-bound 44 SMA scanner.
+    """Background 44 SMA scanner backed by the primary market-data master.
 
-    The scanner deliberately uses the FYERS NSE-CM master as its universe.
-    Live mode refreshes quotes; EOD mode evaluates completed daily candles once.
-    Historical calculations are cached in memory by the FYERS provider.
+    Broker/FYERS connections are never required. Live mode refreshes primary
+    quotes; EOD mode evaluates the completed daily candle from the same source.
+    Historical calculations are cached in memory.
     """
 
     def __init__(self) -> None:
@@ -63,12 +63,11 @@ class MA44Scanner:
         self._last_eod_scan: float | None = None
         self._status = "IDLE"
         self._stage = "WAITING"
-        self._message = "44 MA scanner waiting for a connected FYERS account."
+        self._message = "44 MA scanner waiting for primary market data."
         self._error = ""
         self._processed = 0
         self._total = 0
         self._account_id: int | None = None
-        self._preferred_account_id: int | None = None
 
 
     @staticmethod
@@ -127,68 +126,17 @@ class MA44Scanner:
         self._stop.set()
 
     def set_preferred_account(self, account_id: int | None) -> None:
+        # Compatibility no-op. Market data is not account-bound.
         with self._lock:
-            self._preferred_account_id = account_id if account_id and account_id > 0 else None
-
-    def _connected_fyers_account(self):
-        accounts = broker_accounts.list_accounts()
-        with self._lock:
-            preferred_id = self._preferred_account_id
-        if preferred_id is not None:
-            for account in accounts:
-                if account.id != preferred_id or account.broker.lower() != "fyers":
-                    continue
-                # The UI's CONNECTED state is normally authoritative, but the
-                # persisted status can briefly lag the access-token state after
-                # a fresh FYERS login. A usable token is sufficient for the
-                # scanner to attempt the provider connection; provider errors
-                # are then surfaced instead of leaving the scanner in WAITING.
-                if account.status.lower() == "connected" or broker_accounts.get_access_token(account.id):
-                    return account
-            return None
-        for account in accounts:
-            if account.broker.lower() != "fyers":
-                continue
-            if account.status.lower() == "connected" or broker_accounts.get_access_token(account.id):
-                return account
-        return None
+            self._account_id = None
 
     def _load_universe(self) -> list[tuple[str, str]]:
-        import requests
+        # Use the latest NSE equity bhavcopy only as a lightweight stock-universe
+        # catalogue. Price/history calculations remain on the primary source.
+        from app.nse_bhavcopy import fetch_latest
 
-        response = requests.get(
-            "https://public.fyers.in/sym_details/NSE_CM_sym_master.json",
-            timeout=20,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise ValueError("FYERS NSE symbol master returned an invalid payload.")
-
-        # Prefer EQ when both EQ and BE records exist for one ticker. Both are
-        # stock series; indices and non-equity instruments are excluded.
-        selected: dict[str, tuple[int, str]] = {}
-        for api_symbol, item in payload.items():
-            if not isinstance(item, dict):
-                continue
-            api = str(api_symbol or "").strip().upper()
-            if not api.startswith("NSE:") or "-" not in api:
-                continue
-            base, series = api.rsplit(":", 1)[-1].rsplit("-", 1)
-            if series not in {"EQ", "BE"}:
-                continue
-            ticker = str(item.get("symTicker") or "").strip().upper()
-            if not ticker:
-                ticker = base
-            ticker = ticker.rsplit("-", 1)[0]
-            if not ticker:
-                continue
-            priority = 0 if series == "EQ" else 1
-            previous = selected.get(ticker)
-            if previous is None or priority < previous[0]:
-                selected[ticker] = (priority, api)
-
-        return [(ticker, api) for ticker, (_, api) in sorted(selected.items())]
+        _, rows = fetch_latest()
+        return [(ticker, ticker) for ticker in sorted(rows)]
 
     @staticmethod
     def _metrics_from_candles(candles, *, include_last_day: bool) -> dict | None:
@@ -293,18 +241,9 @@ class MA44Scanner:
             self._message = f"Trend data ready · {len(fresh):,} stocks passed the 20-day trend filter."
             self._status = "READY"
 
-    def _provider(self, account_id: int):
-        account, client_id, api_key, _ = broker_accounts.get_account_credentials(account_id)
-        token = broker_accounts.get_access_token(account_id)
-        if account.broker.lower() != "fyers":
-            raise ValueError("44 MA scanner requires a connected FYERS account.")
-        if not token:
-            raise ValueError("Selected FYERS account is not connected.")
-        from app.providers.fyers import FyersMarketDataProvider
-        return FyersMarketDataProvider(
-            client_id=api_key.strip() or client_id.strip(),
-            access_token=token,
-        )
+    @staticmethod
+    def _provider():
+        return market_data_master
 
     def _scan_live(self, provider) -> None:
         with self._lock:
@@ -386,30 +325,27 @@ class MA44Scanner:
                 self._total = len(universe)
                 self._message = f"EOD scan in progress · 0/{len(universe):,}"
 
-        # EOD source is NSE's official final UDiFF bhavcopy. This avoids
-        # thousands of FYERS quote/history calls and gives the final exchange
-        # OHLC for every equity in one compressed file.
-        from app.nse_bhavcopy import fetch_latest
-
-        bhav_date, bhavcopy = fetch_latest()
+        # EOD uses the same primary quote source as charts/watchlists.
+        quotes = provider.get_quotes([api for _, api in universe])
+        api_to_quote = {quote.symbol.upper(): quote for quote in quotes}
         results: list[dict] = []
 
         for processed, (ticker, api) in enumerate(universe, start=1):
             if self._stop.is_set():
                 return
             metric = metrics.get(ticker)
-            row = bhavcopy.get(ticker.upper())
-            if not metric or not row:
+            quote = api_to_quote.get(api.upper())
+            if not metric or quote is None:
                 continue
 
-            today_open = float(row["open"])
-            today_high = float(row["high"])
-            today_low = float(row["low"])
-            today_close = float(row["close"])
-            previous_close = float(row["previous_close"])
+            today_open = float(quote.open or 0)
+            today_high = float(quote.high or 0)
+            today_low = float(quote.low or 0)
+            today_close = float(quote.last or 0)
+            previous_close = today_close - float(quote.change or 0)
 
             tail = metric.get("tail_closes") or []
-            if len(tail) < 199:
+            if len(tail) < 199 or today_close <= 0:
                 continue
 
             sma44 = (sum(tail[-43:]) + today_close) / 44.0
@@ -439,20 +375,16 @@ class MA44Scanner:
                 and today_close > sma44
                 and -0.25 <= low_distance <= 2.0
             ):
-                change = (
-                    (today_close - previous_close) / previous_close * 100.0
-                    if previous_close else 0.0
-                )
                 results.append({
                     "symbol": ticker,
                     "closed": today_close,
-                    "change_percent": change,
+                    "change_percent": quote.change_percent,
                     "ma_distance": close_distance,
                     "sma44": sma44,
                     "high": today_high,
                     "low": today_low,
                     "mode": "eod",
-                    "bhavcopy_date": bhav_date.isoformat(),
+                    "market_data_source": configured_source(),
                 })
 
             with self._lock:
@@ -471,22 +403,13 @@ class MA44Scanner:
             self._status = "EOD_COMPLETE"
             self._message = (
                 f"EOD scan complete · {len(results):,} matches · "
-                f"NSE bhavcopy {bhav_date.isoformat()}"
+                f"primary market data {configured_source()}"
             )
 
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
                 now = _now()
-                account = self._connected_fyers_account()
-                if not account:
-                    with self._lock:
-                        self._status = "WAITING"
-                        self._stage = "WAITING_FOR_BROKER"
-                        self._message = "Waiting for a connected FYERS account."
-                        self._account_id = None
-                    self._stop.wait(15)
-                    continue
 
                 with self._lock:
                     if self._last_date != now.date().isoformat():
@@ -496,7 +419,7 @@ class MA44Scanner:
                         self._results["eod"] = []
                         self._eod_done_date = None
 
-                provider = self._provider(account.id)
+                provider = self._provider()
                 with self._lock:
                     cached_universe = list(self._universe)
                 if cached_universe:
@@ -509,7 +432,7 @@ class MA44Scanner:
                     universe = self._load_universe()
                 with self._lock:
                     self._universe = universe
-                    self._account_id = account.id
+                    self._account_id = None
                     if self._stage == "LOADING_UNIVERSE":
                         self._message = f"NSE universe loaded · {len(universe):,} stocks"
 
@@ -529,14 +452,13 @@ class MA44Scanner:
                         with self._lock:
                             self._stage = "COMPLETE"
                     self._status = "EOD_COMPLETE"
-                    # EOD is intentionally one run per day.
                     self._stop.wait(30)
                     continue
 
                 with self._lock:
                     self._status = "WAITING"
                     self._stage = "WAITING_FOR_MARKET"
-                    self._message = "Waiting for NSE market session..."
+                    self._message = f"Waiting for NSE market session · source {configured_source()}"
                 self._stop.wait(30)
             except Exception as exc:
                 with self._lock:
@@ -561,7 +483,7 @@ class MA44Scanner:
                     if self._total else 0
                 ),
                 "error": self._error,
-                "account_id": self._account_id,
+                "account_id": None,
                 "universe_count": len(self._universe),
                 "eligible_trend_count": len(self._metrics),
                 "processed": self._processed,

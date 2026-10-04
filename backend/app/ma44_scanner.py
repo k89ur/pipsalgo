@@ -210,29 +210,51 @@ class MA44Scanner:
             self._error = ""
 
         fresh: dict[str, dict] = {}
+        chunk_size = 40
 
-        def one(item):
-            ticker, api = item
+        for offset in range(0, len(universe), chunk_size):
+            if self._stop.is_set():
+                return
+
+            chunk = universe[offset:offset + chunk_size]
             try:
-                metric = self._history_metrics(provider, api, include_last_day)
-                return ticker, metric, ""
+                history_map = provider.get_history_batch(
+                    [api for _, api in chunk],
+                    "D",
+                    HISTORY_LIMIT,
+                    start=None,
+                    end=date.today(),
+                )
             except Exception as exc:
-                return ticker, None, str(exc)
+                history_map = {}
+                batch_error = str(exc)
+            else:
+                batch_error = ""
 
-        with ThreadPoolExecutor(max_workers=8, thread_name_prefix="ma44-history") as pool:
-            futures = [pool.submit(one, item) for item in universe]
-            for future in as_completed(futures):
-                if self._stop.is_set():
-                    return
-                ticker, metric, error = future.result()
-                if metric:
-                    fresh[ticker] = metric
-                with self._lock:
-                    self._processed += 1
-                    self._message = (
-                        f"Building 44/150/200 SMA trend data · "
-                        f"{self._processed:,}/{self._total:,}"
-                    )
+            for ticker, api in chunk:
+                try:
+                    candles = history_map.get(api.upper())
+                    if candles and not include_last_day:
+                        today = _now().date()
+                        candles = [
+                            candle for candle in candles
+                            if datetime.fromtimestamp(candle.time, IST).date() < today
+                        ]
+                    metric = self._metrics_from_candles(candles or [], include_last_day=include_last_day)
+                    if metric:
+                        fresh[ticker] = metric
+                except Exception:
+                    # One malformed/delisted security must not abort the entire batch.
+                    pass
+
+            with self._lock:
+                self._processed = min(offset + len(chunk), self._total)
+                self._message = (
+                    f"Building 44/150/200 SMA trend data · "
+                    f"{self._processed:,}/{self._total:,}"
+                )
+                if batch_error:
+                    self._error = f"Some market-data batches failed: {batch_error}"
 
         self._save_metrics_cache(fresh)
         with self._lock:
@@ -240,6 +262,7 @@ class MA44Scanner:
             self._stage = "READY"
             self._message = f"Trend data ready · {len(fresh):,} stocks passed the 20-day trend filter."
             self._status = "READY"
+
 
     @staticmethod
     def _provider():

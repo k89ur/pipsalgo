@@ -12,7 +12,7 @@ import threading
 import time
 from dataclasses import replace
 from typing import Literal
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import requests
 from dotenv import load_dotenv
@@ -123,9 +123,51 @@ def _diagnostic_account_id(request: Request) -> int | None:
     return None
 
 
+def _configured_web_origin() -> str:
+    parsed = urlsplit(PIPSGOX_WEB_URL)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _request_origin_matches_web_app(request: Request) -> bool:
+    expected = _configured_web_origin()
+    origin = request.headers.get("origin", "").strip()
+    if origin:
+        return origin.rstrip("/") == expected.rstrip("/")
+
+    referer = request.headers.get("referer", "").strip()
+    if referer:
+        parsed = urlsplit(referer)
+        return f"{parsed.scheme}://{parsed.netloc}".rstrip("/") == expected.rstrip("/")
+
+    return False
+
+
 @app.middleware("http")
 async def require_private_api(request: Request, call_next):
     path = request.url.path
+
+    # State-changing API requests must prove that they originated from the
+    # configured PIPSGOX web origin. SameSite=Lax remains defense-in-depth;
+    # it is not the sole CSRF control.
+    if (
+        path.startswith("/api/")
+        and request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
+        and not _request_origin_matches_web_app(request)
+    ):
+        return Response(
+            content='{"detail":"Cross-site request blocked."}',
+            status_code=403,
+            media_type="application/json",
+            headers={"Cache-Control": "no-store", "Vary": "Origin, Referer"},
+        )
+
+    if path.startswith("/api/") and not path.startswith("/api/auth/"):
+        if _request_user(request) is None:
+            return Response(
+                content='{"detail":"Authentication required."}',
+                status_code=401,
+                media_type="application/json",
+            )
     if path.startswith("/api/") and not path.startswith("/api/auth/"):
         if _request_user(request) is None:
             return Response(

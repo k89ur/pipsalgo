@@ -267,6 +267,12 @@ def confirm_setup(user_id: int, code: str) -> bool:
 
 def disable(user_id: int, code: str) -> bool:
     with _require_db()() as db:
+        user = db.scalar(
+            select(User).where(User.id == int(user_id)).with_for_update()
+        )
+        if user is None:
+            raise ValueError("User account does not exist.")
+
         credential = _secret_exists(db, user_id)
         if credential is None or not credential.enabled:
             raise ValueError("Authenticator app is not enabled.")
@@ -274,6 +280,11 @@ def disable(user_id: int, code: str) -> bool:
         secret = _decrypt_secret(str(credential.secret_encrypted))
         if not verify_code(secret, code):
             raise ValueError("Invalid authenticator code.")
+
+        # TOTP is a second factor, not a standalone primary sign-in method.
+        # Fail closed if a future authentication change ever creates a
+        # TOTP-only account.
+        require_another_primary_method(db, int(user_id), "__totp__")
 
         db.delete(credential)
         db.commit()

@@ -2797,11 +2797,53 @@ def history(
     try:
         # Primary market data is independent from broker trading accounts.
         if configured_source() != "broker":
-            candles = market_data_master.get_history(
-                symbol, timeframe, limit, start=from_date, end=to_date
-            )
+            source = configured_source()
+            clean_symbol = symbol.strip().upper()
+            try:
+                candles = market_data_master.get_history(
+                    symbol, timeframe, limit, start=from_date, end=to_date
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Primary market-data history failed: source=%s symbol=%s timeframe=%s",
+                    source, clean_symbol, timeframe,
+                )
+                diagnostics.record(
+                    severity="ERROR",
+                    category="MARKET_DATA",
+                    component="Primary Market Data",
+                    service="/api/history",
+                    error_code="PIP-MARKET-MASTER-001",
+                    message=f"{source} history failed for {clean_symbol}.",
+                    symbol=clean_symbol,
+                    technical_detail=f"{type(exc).__name__}: {exc}",
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"{source} market data failed for {clean_symbol}: {exc}",
+                ) from exc
             if not candles:
-                raise ValueError(f"No historical data returned for {symbol.strip().upper()}.")
+                diagnostics.record(
+                    severity="ERROR",
+                    category="MARKET_DATA",
+                    component="Primary Market Data",
+                    service="/api/history",
+                    error_code="PIP-MARKET-MASTER-002",
+                    message=f"No historical data returned for {clean_symbol}.",
+                    symbol=clean_symbol,
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"No historical data returned for {clean_symbol}.",
+                )
+            diagnostics.resolve(
+                error_code="PIP-MARKET-MASTER-001",
+                symbol=clean_symbol,
+            )
+            diagnostics.resolve(
+                error_code="PIP-MARKET-MASTER-002",
+                symbol=clean_symbol,
+            )
             return candles
 
         if account_id is None:
@@ -3021,7 +3063,30 @@ def quote(
     try:
         original = symbol.strip().upper()
         if configured_source() != "broker":
-            return market_data_master.get_quote(original)
+            source = configured_source()
+            try:
+                result = market_data_master.get_quote(original)
+            except Exception as exc:
+                logger.exception(
+                    "Primary market-data quote failed: source=%s symbol=%s",
+                    source, original,
+                )
+                diagnostics.record(
+                    severity="ERROR",
+                    category="MARKET_DATA",
+                    component="Primary Market Data",
+                    service="/api/quote",
+                    error_code="PIP-MARKET-MASTER-003",
+                    message=f"{source} quote failed for {original}.",
+                    symbol=original,
+                    technical_detail=f"{type(exc).__name__}: {exc}",
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"{source} market data quote failed for {original}: {exc}",
+                ) from exc
+            diagnostics.resolve(error_code="PIP-MARKET-MASTER-003", symbol=original)
+            return result
 
         if account_id is None:
             raise HTTPException(status_code=409, detail="Select a connected broker account before loading market data.")
@@ -3185,7 +3250,29 @@ def quotes(
 ) -> list[Quote]:
     requested = [item.strip().upper() for item in symbols.split(",") if item.strip()]
     if configured_source() != "broker":
-        return market_data_master.get_quotes(requested)
+        source = configured_source()
+        try:
+            results = market_data_master.get_quotes(requested)
+        except Exception as exc:
+            logger.exception(
+                "Primary market-data quotes failed: source=%s symbols=%s",
+                source, requested[:20],
+            )
+            diagnostics.record(
+                severity="ERROR",
+                category="MARKET_DATA",
+                component="Primary Market Data",
+                service="/api/quotes",
+                error_code="PIP-MARKET-MASTER-004",
+                message=f"{source} watchlist quotes failed.",
+                technical_detail=f"{type(exc).__name__}: {exc}",
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=f"{source} market data quotes failed: {exc}",
+            ) from exc
+        diagnostics.resolve(error_code="PIP-MARKET-MASTER-004")
+        return results
     selected_provider = _market_data_provider_for_account(account_id)
     try:
         results = get_quotes_for_symbols(requested, selected_provider)

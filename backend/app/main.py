@@ -1174,7 +1174,7 @@ def _system_readiness() -> dict[str, object]:
     ]
     broker_accounts_configured = bool(accounts)
     broker_connected = bool(connected_accounts)
-    ready = user_configured and broker_connected
+    ready = user_configured
 
     return {
         "user_configured": user_configured,

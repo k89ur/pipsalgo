@@ -583,6 +583,11 @@ function initialPasswordResetToken(): string {
   return hash.get("reset_token") || query.get("reset_token") || "";
 }
 
+function initialEmailVerificationToken(): string {
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  return hash.get("email_verify_token") || "";
+}
+
 function App() {
   const [authReady, setAuthReady] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
@@ -636,6 +641,52 @@ function App() {
     const timer = window.setInterval(updateCountdown, 1000);
     return () => window.clearInterval(timer);
   }, [totpChallengeId, totpChallengeExpiresAt]);
+
+  useEffect(() => {
+    const token = initialEmailVerificationToken();
+    if (!token) return;
+
+    // Remove the one-time token from the browser address bar/history before
+    // making any network request. The token arrived in the URL fragment, so
+    // it was never sent to the server as part of the initial page request.
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + window.location.search,
+    );
+
+    let cancelled = false;
+    void apiFetch("/api/auth/email/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(String(payload?.detail || "Email verification failed."));
+        }
+        return payload;
+      })
+      .then(() => {
+        if (cancelled) return;
+        // Keep the result in the URL only as a non-sensitive status marker.
+        // No verification token is ever placed in the query string.
+        const url = new URL(window.location.href);
+        url.searchParams.set("email_verified", "success");
+        window.history.replaceState(null, "", url.pathname + url.search);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        const url = new URL(window.location.href);
+        url.searchParams.set("email_verified", "failed");
+        window.history.replaceState(null, "", url.pathname + url.search);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;

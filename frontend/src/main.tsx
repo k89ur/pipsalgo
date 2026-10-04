@@ -724,6 +724,9 @@ function App() {
         const url = new URL(window.location.href);
         url.searchParams.set("totp_disabled", "success");
         window.history.replaceState(null, "", url.pathname + url.search);
+        // Refresh the authenticated security view so the newly disabled TOTP
+        // state and invalidated recovery codes are reflected immediately.
+        window.location.reload();
       })
       .catch(() => {
         if (cancelled) return;

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 

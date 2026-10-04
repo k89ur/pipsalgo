@@ -1015,13 +1015,13 @@ function App() {
   const ma44ModeRef = useRef<"live" | "eod">("live");
 
   useEffect(() => {
-    if (!authenticated || !selectedAccountId) return;
+    if (!authenticated) return;
     let cancelled = false;
     const load = async () => {
       if (watchPanelRef.current !== "44ma") return;
       try {
         const response = await apiFetch(
-          `/api/scanner/44ma?mode=${ma44ModeRef.current}&account_id=${selectedAccountId}`,
+          `/api/scanner/44ma?mode=${ma44ModeRef.current}`,
           { cache: "no-store" },
         );
         const payload = await response.json().catch(() => ({}));
@@ -1034,7 +1034,7 @@ function App() {
     void load();
     const timer = window.setInterval(load, 10000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [authenticated, selectedAccountId]);
+  }, [authenticated]);
 
   useEffect(() => {
     if (selectedAccountId) localStorage.setItem("pipsgox-selected-account", String(selectedAccountId));

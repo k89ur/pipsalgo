@@ -50,7 +50,6 @@ type Props = {
   chartType: ChartType;
   dark: boolean;
   symbol: string;
-  accountId?: number | null;
   timeframe: Timeframe;
   range: ChartRange;
   activeDrawingTool: DrawingTool | null;
@@ -910,7 +909,6 @@ export function Chart({
     showPreviousClose,
     previousClose,
     chartColors,
-    accountId,
   ]);
 
   useEffect(() => {

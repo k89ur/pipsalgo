@@ -1871,104 +1871,11 @@ def _run_startup_checks(account_id: int) -> dict[str, object]:
         error_code="PIP-BROKER-SESSION-001", account_id=account_id, broker=broker,
     )
 
+    # Broker readiness checks are intentionally limited to trading/account APIs.
+    # Market data is provided by the primary market-data master and is not part
+    # of broker connection health, so an expired FYERS token cannot block charts.
+
     provider = None
-    market_provider = None
-    test_symbol = "RELIANCE"
-
-    try:
-        if broker == "dhan":
-            from app.providers.accounts import DhanAccountProvider
-            provider = DhanAccountProvider(client_id, access_token)
-            market_provider = provider
-        else:
-            market_provider = _market_data_provider_for_account(account_id)
-    except Exception as exc:
-        _diagnostic_check(
-            checks, check_id="market-provider", label="Market-data provider",
-            category="MARKET_DATA", component="Provider", severity="CRITICAL",
-            operation=lambda exc=exc: (_ for _ in ()).throw(exc),
-            error_code="PIP-MARKET-PROVIDER-001", account_id=account_id, broker=broker,
-        )
-
-    def check_symbol() -> None:
-        if broker == "dhan":
-            resolved = provider.resolve_instrument(test_symbol)
-            if not resolved or not resolved.get("security_id"):
-                raise ValueError(f"Dhan instrument master could not resolve {test_symbol}.")
-        else:
-            master = _load_nse_symbol_master()
-            if not master or not resolve_api_symbol(test_symbol):
-                raise ValueError(f"{test_symbol} was not found in the current FYERS NSE symbol master.")
-
-    _diagnostic_check(
-        checks, check_id="market-symbol", label="Symbol master / resolution",
-        category="MARKET_DATA", component="Symbol Master", severity="CRITICAL",
-        operation=check_symbol, error_code="PIP-MARKET-SYMBOL-001",
-        account_id=account_id, broker=broker, symbol=test_symbol,
-    )
-
-    def check_quote() -> None:
-        if market_provider is None:
-            raise ValueError("Market-data provider is unavailable.")
-        if broker == "dhan":
-            resolved = provider.resolve_instrument(test_symbol)
-            if not resolved or not resolved.get("security_id"):
-                raise ValueError(f"Dhan instrument master could not resolve {test_symbol}.")
-            payload = provider.get_ltp({resolved["exchange_segment"]: [int(resolved["security_id"])]})
-            data = payload.get("data", {}) if isinstance(payload, dict) else {}
-            segment = data.get(resolved["exchange_segment"], {}) if isinstance(data, dict) else {}
-            item = segment.get(str(resolved["security_id"]), {}) if isinstance(segment, dict) else {}
-            if not isinstance(item, dict) or item.get("last_price") is None:
-                raise ValueError(f"Dhan returned no market quote for {test_symbol}.")
-        else:
-            api_symbol = resolve_api_symbol(test_symbol)
-            if not api_symbol:
-                raise ValueError(f"{test_symbol} could not be resolved.")
-            try:
-                quote_result = market_provider.get_quote(api_symbol)
-            except Exception as exc:
-                raise ValueError(
-                    f"FYERS quote request failed for {api_symbol}: {exc}"
-                ) from exc
-            if float(quote_result.last) <= 0:
-                raise ValueError(f"FYERS returned no usable quote for {api_symbol}.")
-
-    _diagnostic_check(
-        checks, check_id="market-quote", label="Market quote",
-        category="MARKET_DATA", component="Quote API", severity="CRITICAL",
-        operation=check_quote, error_code="PIP-MARKET-QUOTE-001",
-        account_id=account_id, broker=broker, symbol=test_symbol,
-    )
-
-    def check_history() -> None:
-        start = date.today() - timedelta(days=10)
-        end = date.today()
-        if market_provider is None:
-            raise ValueError("Market-data provider is unavailable.")
-        if broker == "dhan":
-            resolved = provider.resolve_instrument(test_symbol)
-            if not resolved or not resolved.get("security_id"):
-                raise ValueError(f"Dhan instrument master could not resolve {test_symbol}.")
-            payload = provider.get_history(
-                resolved["security_id"], resolved["exchange_segment"], resolved["instrument"],
-                "D", start.isoformat(), end.isoformat(),
-            )
-            if not isinstance(payload, dict) or not payload.get("timestamp") or not payload.get("close"):
-                raise ValueError(f"Dhan returned no daily historical candles for {test_symbol}.")
-        else:
-            api_symbol = resolve_api_symbol(test_symbol)
-            if not api_symbol:
-                raise ValueError(f"{test_symbol} could not be resolved.")
-            candles = market_provider.get_history(api_symbol, "D", 5, start=start, end=end)
-            if not candles:
-                raise ValueError(f"FYERS returned no daily historical candles for {api_symbol}.")
-
-    _diagnostic_check(
-        checks, check_id="market-history", label="Historical market data",
-        category="MARKET_DATA", component="History API", severity="CRITICAL",
-        operation=check_history, error_code="PIP-MARKET-HISTORY-001",
-        account_id=account_id, broker=broker, symbol=test_symbol,
-    )
 
     # These APIs are useful signals but do not block chart access.
     for check_id, label, method_name, error_code in (
@@ -1987,14 +1894,14 @@ def _run_startup_checks(account_id: int) -> dict[str, object]:
         )
 
     checks.append({
-        "id": "live-stream",
-        "label": "Live market stream",
+        "id": "market-data-master",
+        "label": "Primary market data",
         "category": "MARKET_DATA",
-        "component": "WebSocket",
+        "component": "Market Data Master",
         "severity": "INFO",
-        "status": "SKIPPED",
-        "message": "Live stream is checked when the watchlist session starts; HTTP quote polling is the startup-safe fallback.",
-        "technical_detail": "",
+        "status": "OK",
+        "message": f"Market data is independent from broker connection and uses {configured_source()}.",
+        "technical_detail": "No broker/FYERS market-data request is made during broker startup checks.",
     })
 
     blocking = [

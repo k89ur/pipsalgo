@@ -1075,7 +1075,7 @@ class Quote(BaseModel):
     volume: int | None = None
     bid: float | None = None
     ask: float | None = None
-    source: str = "FYERS API V3"
+    source: str = "yfinance"
 
 class QuotesRequest(BaseModel):
     account_id: int | None = None

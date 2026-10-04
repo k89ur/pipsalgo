@@ -7,7 +7,7 @@ import { DevConsole } from "./DevConsole";
 import { BrokerConnections } from "./BrokerConnections";
 import { StatusCenter } from "./StatusCenter";
 import { SecuritySettings } from "./SecuritySettings";
-import { loginWithPasskey, passkeySupported } from "./webauthn";
+import { loginWithPasskey, passkeySupported, signupWithPasskey } from "./webauthn";
 
 type WatchItem = { symbol: string; price: string; change: string; apiSymbol?: string };
 export type ChartTheme = "pipsgox" | "classic" | "light";
@@ -593,6 +593,7 @@ function App() {
   const [authConfirmPassword, setAuthConfirmPassword] = useState("");
   const [authError, setAuthError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
+  const [signupWithPasskeyMode, setSignupWithPasskeyMode] = useState(false);
   const [totpChallengeId, setTotpChallengeId] = useState("");
   const [totpChallengeExpiresAt, setTotpChallengeExpiresAt] = useState<number | null>(null);
   const [totpChallengeSecondsLeft, setTotpChallengeSecondsLeft] = useState<number | null>(null);
@@ -844,6 +845,29 @@ function App() {
       } else {
         setAuthError(message);
       }
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const createAccountWithPasskey = async () => {
+    const username = authUsername.trim();
+    if (username.length < 3 || username.length > 64 || /\s/.test(username)) {
+      setAuthError("Enter a username between 3 and 64 characters with no spaces.");
+      return;
+    }
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      const payload = await signupWithPasskey(username);
+      if (!payload?.authenticated) throw new Error("Passkey signup did not establish a session.");
+      setAuthenticated(true);
+      setAppReady(false);
+      setAuthPassword("");
+      setAuthConfirmPassword("");
+      setSignupWithPasskeyMode(false);
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Passkey account creation failed.");
     } finally {
       setAuthBusy(false);
     }
@@ -2266,6 +2290,7 @@ json.dumps(_result)`;
               className={authMode === "login" ? "active" : ""}
               onClick={() => {
                 setAuthMode("login");
+                setSignupWithPasskeyMode(false);
                 setAuthError("");
                 setTotpChallengeId("");
                 setTotpChallengeExpiresAt(null);
@@ -2281,6 +2306,7 @@ json.dumps(_result)`;
               className={authMode === "signup" ? "active" : ""}
               onClick={() => {
                 setAuthMode("signup");
+                setSignupWithPasskeyMode(false);
                 setAuthError("");
                 setTotpChallengeId("");
                 setTotpChallengeExpiresAt(null);
@@ -2359,32 +2385,94 @@ json.dumps(_result)`;
             <>
               <label>
                 Username
-                <input value={authUsername} onChange={(e) => setAuthUsername(e.target.value)} autoComplete="username" minLength={3} maxLength={64} required />
-              </label>
-              <label>
-                Password
                 <input
-                  type="password"
-                  value={authPassword}
-                  onChange={(e) => setAuthPassword(e.target.value)}
-                  autoComplete={signingUp ? "new-password" : "current-password"}
-                  minLength={12}
+                  value={authUsername}
+                  onChange={(e) => setAuthUsername(e.target.value)}
+                  autoComplete="username"
+                  minLength={3}
+                  maxLength={64}
                   required
                 />
               </label>
-              {signingUp && (
-                <label>
-                  Confirm password
-                  <input type="password" value={authConfirmPassword} onChange={(e) => setAuthConfirmPassword(e.target.value)} autoComplete="new-password" minLength={12} required />
-                </label>
-              )}
-              {signingUp && <div className="auth-note">Use a strong password of at least 12 characters. Broker connection is optional and can be added later from Account.</div>}
-              {authError && <div className="auth-error">{authError}</div>}
-              <button className="auth-submit" type="submit" disabled={!authReady || authBusy}>
-                {authBusy
-                  ? (signingUp ? "CREATING ACCOUNT..." : "SIGNING IN...")
-                  : (signingUp ? "Create Account" : "Sign In")}
-              </button>
+
+              {signingUp && signupWithPasskeyMode ? (
+                <>
+                  <div className="auth-note">
+                    Create a passwordless PIPSGOX account. Your passkey is the account sign-in credential. Use your device fingerprint, face unlock, PIN, or security key.
+                  </div>
+                  {authError && <div className="auth-error">{authError}</div>}
+                  <button className="auth-passkey-button" type="button" disabled={!authReady || authBusy || !passkeySupported()} onClick={() => void createAccountWithPasskey()}>
+                    <span>⌁</span>
+                    {authBusy ? "CREATING ACCOUNT..." : "Create Account with Passkey"}
+                    <em>RECOMMENDED</em>
+                  </button>
+                  <button className="auth-secondary-button" type="button" disabled={authBusy} onClick={() => { setSignupWithPasskeyMode(false); setAuthError(""); }}>
+                    Use Password Instead
+                  </button>
+                </>
+              ) : (
+                <>
+                  <label>
+                    Password
+                    <input
+                      type="password"
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      autoComplete={signingUp ? "new-password" : "current-password"}
+                      minLength={12}
+                      required
+                    />
+                  </label>
+                  {signingUp && (
+                    <label>
+                      Confirm password
+                      <input type="password" value={authConfirmPassword} onChange={(e) => setAuthConfirmPassword(e.target.value)} autoComplete="new-password" minLength={12} required />
+                    </label>
+                  )}
+                  {signingUp && <div className="auth-note">Use a strong password of at least 12 characters. Broker connection is optional and can be added later from Account.</div>}
+                  {authError && <div className="auth-error">{authError}</div>}
+                  <button className="auth-submit" type="submit" disabled={!authReady || authBusy}>
+                    {authBusy
+                      ? (signingUp ? "CREATING ACCOUNT..." : "SIGNING IN...")
+                      : (signingUp ? "Create Account" : "Sign In")}
+                  </button>
+                  {signingUp && (
+                    <button className="auth-passkey-button" type="button" disabled={!authReady || authBusy || !passkeySupported()} onClick={() => { setSignupWithPasskeyMode(true); setAuthError(""); }}>
+                      <span>⌁</span>
+                      Create Account with Passkey
+                      <em>RECOMMENDED</em>
+                    </button>
+                  )}
+                  {!signingUp && (
+                    <button
+                      className="auth-secondary-button"
+                      type="button"
+                      disabled={authBusy}
+                      onClick={() => {
+                        setPasswordResetMode("request");
+                        setPasswordResetToken("");
+                        setPasswordResetMessage("");
+                        setPasswordResetEmail("");
+                        setAuthError("");
+                      }}
+                    >
+                      Forgot Password?
+                    </button>
+                  )}
+                  {!signingUp && (
+                    <button
+                      className="auth-passkey-button"
+                      type="button"
+                      disabled={!authReady || authBusy || !passkeySupported()}
+                      onClick={() => void signInWithPasskey()}
+                    >
+                      <span>⌁</span>
+                      {authBusy ? "AUTHENTICATING..." : "Sign in with Passkey"}
+                      <em>RECOMMENDED</em>
+                    </button>
+                  )}
+                </>
+              )
               {!signingUp && (
                 <button
                   className="auth-secondary-button"

@@ -26,6 +26,11 @@ class TotpDisableChallenge(Base):
         unique=True,
         index=True,
     )
+    email_hash: Mapped[bytes] = mapped_column(
+        LargeBinary(32),
+        nullable=False,
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

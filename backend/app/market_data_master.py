@@ -118,6 +118,76 @@ class _YFinanceProvider:
             frame.columns = frame.columns.get_level_values(0)
         return [_frame_from_row(row) for _, row in frame.tail(limit).iterrows()]
 
+    def get_quotes(self, symbols: list[str]) -> list[Quote]:
+        """Fetch multiple quotes in one Yahoo request to keep scans lightweight."""
+        requested = [item.strip().upper() for item in symbols if item and item.strip()]
+        if not requested:
+            return []
+
+        import yfinance as yf
+
+        yahoo_symbols = [_symbol_for_yfinance(symbol) for symbol in requested]
+        try:
+            yf.config.network.retries = 2
+            yf.config.debug.hide_exceptions = False
+        except AttributeError:
+            pass
+
+        frame = yf.download(
+            tickers=yahoo_symbols,
+            period="5d",
+            interval="1d",
+            group_by="ticker",
+            auto_adjust=False,
+            actions=False,
+            progress=False,
+            threads=False,
+            timeout=20,
+            repair=False,
+            multi_level_index=True,
+        )
+        if frame is None or frame.empty:
+            raise ValueError("No quote data returned for the requested symbols from yfinance.")
+
+        results: list[Quote] = []
+        for original, yahoo_symbol in zip(requested, yahoo_symbols):
+            try:
+                if hasattr(frame.columns, "levels"):
+                    if yahoo_symbol in frame.columns.get_level_values(0):
+                        rows = frame[yahoo_symbol]
+                    elif yahoo_symbol in frame.columns.get_level_values(1):
+                        rows = frame.xs(yahoo_symbol, axis=1, level=1)
+                    else:
+                        continue
+                else:
+                    rows = frame
+
+                rows = rows.dropna(subset=["Close"])
+                if rows.empty:
+                    continue
+                last = rows.iloc[-1]
+                previous = rows.iloc[-2] if len(rows) > 1 else last
+                close = float(last["Close"])
+                prev_close = float(previous["Close"])
+                change = close - prev_close
+                results.append(
+                    Quote(
+                        symbol=original,
+                        exchange="BSE" if yahoo_symbol.endswith(".BO") else "NSE",
+                        last=close,
+                        change=change,
+                        change_percent=(change / prev_close * 100.0) if prev_close else 0.0,
+                        open=float(last["Open"]),
+                        high=float(last["High"]),
+                        low=float(last["Low"]),
+                        volume=int(last.get("Volume", 0) or 0),
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+
+        return results
+
     def get_quote(self, symbol: str) -> Quote:
         clean = symbol.strip().upper()
         ticker = self._ticker(clean)
@@ -264,7 +334,11 @@ class MarketDataMaster:
         return self.provider().get_quote(*args, **kwargs)
 
     def get_quotes(self, symbols: list[str]) -> list[Quote]:
-        return [self.get_quote(symbol) for symbol in symbols]
+        provider = self.provider()
+        batch_method = getattr(provider, "get_quotes", None)
+        if callable(batch_method):
+            return batch_method(symbols)
+        return [provider.get_quote(symbol) for symbol in symbols]
 
 
 market_data_master = MarketDataMaster()

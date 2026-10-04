@@ -322,6 +322,72 @@ def get_user(token: str | None) -> dict[str, object] | None:
     }
 
 
+def list_sessions(user_id: int, current_token: str | None = None) -> list[dict[str, object]]:
+    """Return safe metadata for the user's active sessions."""
+    now = datetime.now(timezone.utc)
+    current_hash = _token_hash(current_token) if current_token else None
+    with _require_db()() as db:
+        rows = db.execute(
+            select(Session)
+            .where(
+                Session.user_id == user_id,
+                Session.expires_at > now,
+                Session.revoked_at.is_(None),
+            )
+            .order_by(Session.last_seen_at.desc().nullslast(), Session.created_at.desc())
+        ).scalars().all()
+
+    return [
+        {
+            "id": int(session.id),
+            "created_at": session.created_at.isoformat(),
+            "last_seen_at": session.last_seen_at.isoformat() if session.last_seen_at else None,
+            "expires_at": session.expires_at.isoformat(),
+            "user_agent": session.user_agent,
+            "current": bool(current_hash and hmac.compare_digest(session.session_token_hash, current_hash)),
+        }
+        for session in rows
+    ]
+
+
+def revoke_session(user_id: int, session_id: int) -> bool:
+    """Revoke one active session belonging to the user."""
+    now = datetime.now(timezone.utc)
+    with _require_db()() as db:
+        result = db.execute(
+            update(Session)
+            .where(
+                Session.id == session_id,
+                Session.user_id == user_id,
+                Session.revoked_at.is_(None),
+            )
+            .values(revoked_at=now)
+        )
+        db.commit()
+        return bool(result.rowcount)
+
+
+def revoke_other_sessions(user_id: int, current_token: str | None) -> int:
+    """Revoke every active session except the caller's current session."""
+    now = datetime.now(timezone.utc)
+    current_hash = _token_hash(current_token) if current_token else None
+    with _require_db()() as db:
+        statement = (
+            update(Session)
+            .where(
+                Session.user_id == user_id,
+                Session.revoked_at.is_(None),
+                Session.expires_at > now,
+            )
+            .values(revoked_at=now)
+        )
+        if current_hash:
+            statement = statement.where(Session.session_token_hash != current_hash)
+        result = db.execute(statement)
+        db.commit()
+        return int(result.rowcount or 0)
+
+
 def revoke(token: str | None) -> None:
     if not token:
         return

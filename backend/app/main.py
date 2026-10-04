@@ -857,7 +857,7 @@ def totp_disable(payload: TotpCodePayload, request: Request) -> dict[str, bool]:
     return {"enabled": False}
 
 
-class PasskeyDeletePayload:
+class PasskeyDeletePayload(BaseModel):
     passkey_id: int
 
 

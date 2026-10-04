@@ -14,6 +14,15 @@ type TotpStatus = {
   configured: boolean;
 };
 
+type SessionItem = {
+  id: number;
+  created_at: string;
+  last_seen_at: string | null;
+  expires_at: string;
+  user_agent: string | null;
+  current: boolean;
+};
+
 type EmailStatus = {
   email: string | null;
   verified: boolean;
@@ -32,6 +41,8 @@ type SecuritySettingsProps = {
 
 export function SecuritySettings({ onClose }: SecuritySettingsProps) {
   const [passkeys, setPasskeys] = useState<PasskeyItem[]>([]);
+  const [sessions, setSessions] = useState<SessionItem[]>([]);
+  const [sessionsBusy, setSessionsBusy] = useState(false);
   const [totp, setTotp] = useState<TotpStatus>({ enabled: false, configured: false });
   const [emailStatus, setEmailStatus] = useState<EmailStatus>({ email: null, verified: false });
   const [emailInput, setEmailInput] = useState("");
@@ -54,20 +65,23 @@ export function SecuritySettings({ onClose }: SecuritySettingsProps) {
     setLoading(true);
     setError("");
     try {
-      const [passkeyResponse, totpResponse, recoveryResponse, emailResponse] = await Promise.all([
+      const [passkeyResponse, totpResponse, recoveryResponse, emailResponse, sessionsResponse] = await Promise.all([
         apiFetch("/api/auth/passkeys", { cache: "no-store" }),
         apiFetch("/api/auth/totp", { cache: "no-store" }),
         apiFetch("/api/auth/recovery-codes", { cache: "no-store" }),
         apiFetch("/api/auth/email", { cache: "no-store" }),
+        apiFetch("/api/security/sessions", { cache: "no-store" }),
       ]);
       const passkeyPayload = await passkeyResponse.json().catch(() => ({}));
       const totpPayload = await totpResponse.json().catch(() => ({}));
       const recoveryPayload = await recoveryResponse.json().catch(() => ({}));
       const emailPayload = await emailResponse.json().catch(() => ({}));
+      const sessionsPayload = await sessionsResponse.json().catch(() => ({}));
       if (!passkeyResponse.ok) throw new Error(String(passkeyPayload?.detail || "Could not load passkeys."));
       if (!totpResponse.ok) throw new Error(String(totpPayload?.detail || "Could not load authenticator status."));
       if (!recoveryResponse.ok) throw new Error(String(recoveryPayload?.detail || "Could not load recovery code status."));
       if (!emailResponse.ok) throw new Error(String(emailPayload?.detail || "Could not load email status."));
+      if (!sessionsResponse.ok) throw new Error(String(sessionsPayload?.detail || "Could not load active sessions."));
       setPasskeys(Array.isArray(passkeyPayload.passkeys) ? passkeyPayload.passkeys : []);
       setTotp({
         enabled: Boolean(totpPayload.enabled),
@@ -80,6 +94,7 @@ export function SecuritySettings({ onClose }: SecuritySettingsProps) {
       };
       setEmailStatus(nextEmail);
       setEmailInput(nextEmail.email || "");
+      setSessions(Array.isArray(sessionsPayload.sessions) ? sessionsPayload.sessions : []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load security settings.");
     } finally {
@@ -90,6 +105,62 @@ export function SecuritySettings({ onClose }: SecuritySettingsProps) {
   useEffect(() => {
     void loadSecurityData();
   }, []);
+
+  const revokeSession = async (session: SessionItem) => {
+    const label = session.current ? "this device" : "this session";
+    if (!window.confirm(`Revoke ${label}? You will be signed out if it is the current session.`)) return;
+
+    setSessionsBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const response = await apiFetch("/api/security/sessions/" + session.id, { method: "DELETE" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(String(payload?.detail || "Could not revoke session."));
+      if (session.current) {
+        window.location.reload();
+        return;
+      }
+      setSessions((items) => items.filter((item) => item.id !== session.id));
+      setMessage("Session revoked.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not revoke session.");
+    } finally {
+      setSessionsBusy(false);
+    }
+  };
+
+  const logoutOtherSessions = async () => {
+    if (!window.confirm("Log out all other active sessions? This will not sign out your current device.")) return;
+
+    setSessionsBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const response = await apiFetch("/api/security/sessions/logout-others", { method: "POST" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(String(payload?.detail || "Could not log out other sessions."));
+      const count = Number(payload.revoked_sessions || 0);
+      setSessions((items) => items.filter((item) => item.current));
+      setMessage(count ? `Logged out ${count} other session${count === 1 ? "" : "s"}.` : "No other active sessions were found.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not log out other sessions.");
+    } finally {
+      setSessionsBusy(false);
+    }
+  };
+
+  const formatSessionDevice = (userAgent: string | null) => {
+    if (!userAgent) return "Unknown browser/device";
+    if (/android/i.test(userAgent)) return /chrome/i.test(userAgent) ? "Chrome on Android" : "Android device";
+    if (/iphone|ipad/i.test(userAgent)) return /safari/i.test(userAgent) ? "Safari on iPhone/iPad" : "iPhone/iPad";
+    if (/windows/i.test(userAgent)) return /edge/i.test(userAgent) ? "Edge on Windows" : /chrome/i.test(userAgent) ? "Chrome on Windows" : "Windows browser";
+    if (/macintosh|mac os/i.test(userAgent)) return /chrome/i.test(userAgent) ? "Chrome on macOS" : "macOS browser";
+    if (/linux/i.test(userAgent)) return /chrome/i.test(userAgent) ? "Chrome on Linux" : "Linux browser";
+    return "Browser/device";
+  };
+
+  const formatSessionTime = (value: string | null) => value ? new Date(value).toLocaleString() : "Unknown";
 
   const saveEmail = async () => {
     const email = emailInput.trim().toLowerCase();
@@ -302,6 +373,53 @@ export function SecuritySettings({ onClose }: SecuritySettingsProps) {
         </div>
 
         <div className="security-panel">
+          <div className="security-heading">
+            <div>
+              <div className="security-title">Active Sessions</div>
+              <div className="security-description">
+                Review where your PIPSGOX account is signed in. Session tokens and IP addresses are never shown.
+              </div>
+            </div>
+            <span className="security-status enabled">{sessions.length} ACTIVE</span>
+          </div>
+
+          {loading ? (
+            <div className="security-empty">Loading active sessions...</div>
+          ) : sessions.length === 0 ? (
+            <div className="security-empty">No active sessions.</div>
+          ) : (
+            <div className="security-session-list">
+              {sessions.map((session) => (
+                <div className={"security-session" + (session.current ? " current" : "")} key={session.id}>
+                  <div className="security-session-copy">
+                    <div>
+                      <strong>{formatSessionDevice(session.user_agent)}</strong>
+                      {session.current && <span className="security-session-current">CURRENT</span>}
+                    </div>
+                    <span>Last active {formatSessionTime(session.last_seen_at)}</span>
+                    <span>Created {formatSessionTime(session.created_at)}</span>
+                    <span>Expires {formatSessionTime(session.expires_at)}</span>
+                    <span>IP address protected</span>
+                  </div>
+                  <button className={session.current ? "security-danger" : "security-secondary"} disabled={sessionsBusy} onClick={() => void revokeSession(session)}>
+                    {session.current ? "SIGN OUT" : "REVOKE"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {sessions.length > 1 && (
+            <button className="security-secondary" disabled={sessionsBusy} onClick={() => void logoutOtherSessions()}>
+              {sessionsBusy ? "WORKING..." : "LOG OUT OTHER SESSIONS"}
+            </button>
+          )}
+
+          <div className="security-note">
+            Sessions expire automatically after 12 hours. Revoking a session takes effect immediately.
+          </div>
+
+          <div className="security-divider" />
           <div className="security-heading">
             <div>
               <div className="security-title">Passkeys</div>

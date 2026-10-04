@@ -1546,12 +1546,6 @@ function App() {
     code?: string;
     symbol?: string;
   }) => {
-    if (!selectedAccountId) {
-      setPipscriptOutput(null);
-      setPipscriptStatus("Select a connected broker account before running Pipscript.");
-      return;
-    }
-
     const executionSymbol = override?.symbol ?? symbol;
     const language = override?.language ?? pipscriptLanguage;
     const outputType = override?.outputType ?? pipscriptOutputType;
@@ -1591,7 +1585,7 @@ function App() {
       };
 
       const loadCurrentChartData = async (): Promise<ChartBar[]> => {
-        const response = await apiFetch("/api/history?symbol=" + encodeURIComponent(executionSymbol) + "&timeframe=" + encodeURIComponent(timeframe) + "&limit=800&account_id=" + encodeURIComponent(String(selectedAccountId ?? "")),
+        const response = await apiFetch("/api/history?symbol=" + encodeURIComponent(executionSymbol) + "&timeframe=" + encodeURIComponent(timeframe) + "&limit=800",
           { cache: "no-store" },
         );
         if (!response.ok) throw new Error("Could not load chart data.");
@@ -1619,7 +1613,7 @@ function App() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           cache: "no-store",
-          body: JSON.stringify({ account_id: selectedAccountId, requests }),
+          body: JSON.stringify({ requests }),
         });
         const payload = await response.json().catch(() => null) as {
           history?: Record<string, unknown>;
@@ -1841,8 +1835,7 @@ json.dumps(_result)`;
 
     const loadQuote = async () => {
       try {
-        const response = await apiFetch("/api/quote?symbol=" + encodeURIComponent(chartApiSymbol || symbol) +
-            "&account_id=" + encodeURIComponent(String(selectedAccountId ?? "")),
+        const response = await apiFetch("/api/quote?symbol=" + encodeURIComponent(chartApiSymbol || symbol),
           { cache: "no-store" },
         );
         if (!response.ok) throw new Error("quote request failed");
@@ -1874,79 +1867,10 @@ json.dumps(_result)`;
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [symbol, chartApiSymbol, selectedAccountId]);
+  }, [symbol, chartApiSymbol]);
 
-  useEffect(() => {
-    setLiveQuotes({});
-    if (!watchlist.length) return;
-
-    let stopped = false;
-    let socket: WebSocket | null = null;
-    let reconnectTimer: number | null = null;
-
-    const connect = () => {
-      if (stopped || !selectedAccountId) return;
-
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      socket = new WebSocket(`${protocol}//${window.location.host}/api/ws/quotes`);
-
-      socket.onopen = () => {
-        socket?.send(JSON.stringify({
-          action: "subscribe",
-          account_id: selectedAccountId,
-          symbols: watchlist.map((item) => item.apiSymbol || item.symbol),
-        }));
-      };
-
-      socket.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data) as {
-            type?: string;
-            symbol?: string;
-            last?: number;
-            change?: number;
-            change_percent?: number;
-          };
-
-          if (message.type !== "quote" || !message.symbol || message.last == null) return;
-
-          const item = {
-            symbol: message.symbol,
-            last: Number(message.last),
-            change: Number(message.change ?? 0),
-            change_percent: Number(message.change_percent ?? 0),
-          };
-
-          setLiveQuotes((current) => ({
-            ...current,
-            [item.symbol]: {
-              ...current[item.symbol],
-              ...item,
-            },
-          }));
-        } catch {
-          // Ignore malformed WebSocket messages.
-        }
-      };
-
-      socket.onclose = () => {
-        if (!stopped) reconnectTimer = window.setTimeout(connect, 3000);
-      };
-
-      socket.onerror = () => {
-        socket?.close();
-      };
-    };
-
-    connect();
-
-    return () => {
-      stopped = true;
-      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
-      socket?.close();
-    };
-  }, [watchlist, selectedAccountId]);
-
+  // Primary market data has no broker WebSocket dependency. Watchlist quotes
+  // are refreshed by the HTTP polling effect below.
   useEffect(() => {
     if (!watchlist.length) {
       setLiveQuotes({});
@@ -1958,8 +1882,7 @@ json.dumps(_result)`;
     const loadWatchlistQuotes = async () => {
       try {
         const symbols = watchlist.map((item) => item.symbol).join(",");
-        const response = await apiFetch("/api/quotes?symbols=" + encodeURIComponent(symbols) +
-            "&account_id=" + encodeURIComponent(String(selectedAccountId ?? "")),
+        const response = await apiFetch("/api/quotes?symbols=" + encodeURIComponent(symbols),
           { cache: "no-store" },
         );
         if (!response.ok) throw new Error("watchlist quote request failed");
@@ -1993,7 +1916,7 @@ json.dumps(_result)`;
           return next;
         });
       } catch {
-        // Keep existing live values; WebSocket remains the primary live stream.
+        // Keep existing values when a polling request fails.
       }
     };
 

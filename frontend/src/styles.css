@@ -1962,6 +1962,51 @@ button { cursor: pointer; }
   font-size: 8px;
   letter-spacing: .1em;
 }
+.security-session-list {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0 14px;
+}
+
+.security-session {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px;
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+}
+
+.security-session.current {
+  border-color: var(--accent, #888);
+}
+
+.security-session-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.security-session-copy > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.security-session-copy span {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.security-session-current {
+  font-size: 10px !important;
+  opacity: 1 !important;
+  padding: 2px 5px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+}
+
 .security-passkey-list {
   display: grid;
   gap: 6px;

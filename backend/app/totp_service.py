@@ -176,8 +176,18 @@ def _secret_exists(db: Session, user_id: int) -> TotpCredential | None:
 
 
 def status(user_id: int) -> dict[str, object]:
+    now = datetime.now(timezone.utc)
     with _require_db()() as db:
         credential = _secret_exists(db, user_id)
+        if (
+            credential is not None
+            and not credential.enabled
+            and credential.setup_expires_at is not None
+            and credential.setup_expires_at <= now
+        ):
+            db.delete(credential)
+            db.commit()
+            credential = None
         return {
             "enabled": bool(credential and credential.enabled),
             "configured": credential is not None,

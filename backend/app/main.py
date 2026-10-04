@@ -2014,6 +2014,75 @@ def _aggregate_intraday_candles(candles: list[Candle], minutes: int) -> list[Can
     return sorted(result, key=lambda item: item.time)
 
 
+@app.get("/api/market-data/source")
+def market_data_source() -> dict[str, object]:
+    source = configured_source()
+    return {
+        "source": source,
+        "available_sources": ["yfinance", "nse", "bse"],
+        "broker_independent": True,
+    }
+
+
+@app.get("/api/history", response_model=list[Candle])
+def history(
+    symbol: str = Query(default="BHARTIARTL", min_length=1, max_length=40),
+    timeframe: Timeframe = "D",
+    limit: int = Query(default=800, ge=50, le=2000),
+    from_date: date | None = Query(default=None),
+    to_date: date | None = Query(default=None),
+    account_id: int | None = Query(default=None, ge=1),
+) -> list[Candle]:
+    clean_symbol = symbol.strip().upper()
+    source = configured_source()
+    try:
+        candles = market_data_master.get_history(
+            clean_symbol,
+            timeframe,
+            limit,
+            start=from_date,
+            end=to_date,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Primary market-data history failed: source=%s symbol=%s timeframe=%s",
+            source, clean_symbol, timeframe,
+        )
+        diagnostics.record(
+            severity="ERROR",
+            category="MARKET_DATA",
+            component="Primary Market Data",
+            service="/api/history",
+            error_code="PIP-MARKET-MASTER-001",
+            message=f"{source} history failed for {clean_symbol}.",
+            symbol=clean_symbol,
+            technical_detail=f"{type(exc).__name__}: {exc}",
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"{source} market data failed for {clean_symbol}: {exc}",
+        ) from exc
+
+    if not candles:
+        diagnostics.record(
+            severity="ERROR",
+            category="MARKET_DATA",
+            component="Primary Market Data",
+            service="/api/history",
+            error_code="PIP-MARKET-MASTER-002",
+            message=f"No historical data returned for {clean_symbol}.",
+            symbol=clean_symbol,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"No historical data returned for {clean_symbol}.",
+        )
+
+    diagnostics.resolve(error_code="PIP-MARKET-MASTER-001", symbol=clean_symbol)
+    diagnostics.resolve(error_code="PIP-MARKET-MASTER-002", symbol=clean_symbol)
+    return [to_candle(item) for item in candles]
+
+
 @app.post("/api/pipscript/data")
 def pipscript_data(request: PipscriptDataBatchRequest) -> dict[str, object]:
     """Controlled market-data gateway for browser Pipscripts.

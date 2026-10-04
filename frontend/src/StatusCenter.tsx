@@ -117,7 +117,7 @@ export function StatusCenter({ accountId, embedded = false, onClose }: Props) {
         <div className={"status-health-card " + statusClass(status)}>
           <span>OVERALL STATUS</span>
           <strong>{status}</strong>
-          <small>{accountId ? "Selected broker account" : "No broker account selected"}</small>
+          <small>{accountId ? "Selected broker account" : "Primary market data · no broker required"}</small>
         </div>
         <div className="status-stat"><span>CRITICAL</span><strong>{Number(summary?.critical || 0)}</strong></div>
         <div className="status-stat"><span>ERRORS</span><strong>{Number(summary?.errors || 0)}</strong></div>
@@ -188,7 +188,7 @@ export function StatusCenter({ accountId, embedded = false, onClose }: Props) {
             ))}
           </div>
         ) : (
-          <div className="status-empty">No diagnostic events recorded for this account.</div>
+          <div className="status-empty">{accountId ? "No diagnostic events recorded for this account." : "No diagnostic events recorded yet. Primary market-data errors will appear here."}</div>
         )}
       </div>
     </section>

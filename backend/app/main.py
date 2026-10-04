@@ -967,8 +967,20 @@ def passkey_delete(passkey_id: int, request: Request) -> dict[str, bool]:
     user = _request_user(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required.")
-    if not passkey_service.delete_passkey(int(user["id"]), passkey_id):
+    try:
+        deleted = passkey_service.delete_passkey(int(user["id"]), passkey_id)
+    except ValueError as exc:
+        # This is an expected security-policy rejection, not a server error.
+        security_audit.record(
+            "passkey_delete",
+            username=str(user["username"]),
+            success=False,
+        )
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    if not deleted:
         raise HTTPException(status_code=404, detail="Passkey not found.")
+
     security_audit.record(
         "passkey_delete",
         username=str(user["username"]),

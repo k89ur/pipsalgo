@@ -130,3 +130,20 @@ export async function loginWithPasskey(): Promise<Record<string, any>> {
     credential: credentialToJSON(credential),
   });
 }
+
+
+export async function signupWithPasskey(username: string): Promise<Record<string, any>> {
+  if (!passkeySupported()) {
+    throw new Error("Passkeys require a secure HTTPS connection and a browser with WebAuthn support.");
+  }
+  const options = await jsonRequest("/api/auth/passkey/signup/options", { username });
+  const credential = await navigator.credentials.create({
+    publicKey: registrationOptionsForBrowser(options),
+  });
+  if (!(credential instanceof PublicKeyCredential)) {
+    throw new Error("Passkey signup was cancelled.");
+  }
+  return jsonRequest("/api/auth/passkey/signup/verify", {
+    credential: credentialToJSON(credential),
+  });
+}

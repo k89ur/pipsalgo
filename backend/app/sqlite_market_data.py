@@ -24,6 +24,8 @@ IST = timezone(timedelta(hours=5, minutes=30))
 # Five calendar years of EOD history, including leap days.
 HISTORY_DAYS = 1826
 BASE_URL = "https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{date}_F_0000.csv.zip"
+LEGACY_BASE_URL = "https://archives.nseindia.com/content/historical/EQUITIES/{year}/{month}/cm{day}{month}{year}bhav.csv.zip"
+UDIFF_CUTOVER = date(2024, 7, 8)
 INDEX_BASE_URL = "https://archives.nseindia.com/content/indices/ind_close_all_{date}.csv"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/153 Safari/537.36",
@@ -84,9 +86,16 @@ def initialize() -> None:
             updated_at TEXT NOT NULL
         );
         """)
+        # The first five-year backfill rollout may have marked pre-UDiFF dates
+        # empty because the modern URL does not exist for legacy-format dates.
+        # Reset those empty markers exactly once so the corrected legacy URL retries them.
+        marker = db.execute("SELECT value FROM sync_state WHERE key='legacy_bhavcopy_url_v1'").fetchone()
+        if marker is None:
+            db.execute("DELETE FROM sync_dates WHERE status='empty' AND trading_date < ?", (UDIFF_CUTOVER.isoformat(),))
+            db.execute("INSERT INTO sync_state(key,value) VALUES('legacy_bhavcopy_url_v1','1')")
 
 
-def _clean_symbol(value: str) -> str:
+def _clean_symbol(value: str):
     symbol = (value or "").strip().upper()
     for prefix in ("NSE:", "BSE:"):
         if symbol.startswith(prefix):
@@ -132,14 +141,14 @@ def _parse_bhavcopy(payload: bytes, requested_date: date) -> list[tuple]:
             rows = csv.DictReader(stream)
             parsed = []
             for row in rows:
-                symbol = _clean_symbol(row.get("TckrSymb", ""))
-                series = str(row.get("SctySrs") or "").strip().upper()
+                symbol = _clean_symbol(row.get("TckrSymb") or row.get("SYMBOL") or "")
+                series = str(row.get("SctySrs") or row.get("SERIES") or "").strip().upper()
                 if not symbol or series not in {"EQ", "BE"}:
                     continue
-                open_price = _number(row, "OpnPric", "OPEN_PRICE")
-                high = _number(row, "HghPric", "HIGH_PRICE")
-                low = _number(row, "LwPric", "LOW_PRICE")
-                close = _number(row, "ClsPric", "CLOSE_PRICE")
+                open_price = _number(row, "OpnPric", "OPEN_PRICE", "OPEN")
+                high = _number(row, "HghPric", "HIGH_PRICE", "HIGH")
+                low = _number(row, "LwPric", "LOW_PRICE", "LOW")
+                close = _number(row, "ClsPric", "CLOSE_PRICE", "CLOSE")
                 volume = _number(row, "TtlTradgVol", "TtlTrfVol", "TOTTRDQTY", "NO_OF_SHRS", integer=True)
                 if any(value is None or value <= 0 for value in (open_price, high, low, close)):
                     continue
@@ -153,7 +162,13 @@ def _parse_bhavcopy(payload: bytes, requested_date: date) -> list[tuple]:
 
 
 def _fetch_date(session: requests.Session, trading_date: date) -> list[tuple]:
-    url = BASE_URL.format(date=trading_date.strftime("%Y%m%d"))
+    if trading_date < UDIFF_CUTOVER:
+        month = trading_date.strftime("%b").upper()
+        url = LEGACY_BASE_URL.format(
+            year=trading_date.strftime("%Y"), month=month, day=trading_date.strftime("%d")
+        )
+    else:
+        url = BASE_URL.format(date=trading_date.strftime("%Y%m%d"))
     response = session.get(url, headers=HEADERS, timeout=20)
     if response.status_code == 404:
         return []

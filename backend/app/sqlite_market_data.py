@@ -462,7 +462,20 @@ def sync_corporate_actions(*, historical: bool = False) -> dict:
     start = today - timedelta(days=HISTORY_DAYS if historical else 90)
     end = today + timedelta(days=180)
     with _connect() as db:
-        result = refresh_nse_corporate_actions(db, start_date=start, end_date=end)
+        try:
+            result = refresh_nse_corporate_actions(db, start_date=start, end_date=end)
+        except Exception as exc:
+            # An unavailable NSE endpoint must not kill the market-data sync
+            # worker; persist the failure and retry on the next scheduled run.
+            result = {
+                "status": "error",
+                "from_date": start.isoformat(),
+                "to_date": end.isoformat(),
+                "windows_checked": 0,
+                "rows_received": 0,
+                "events_written": 0,
+                "errors": [f"{type(exc).__name__}: {exc}"],
+            }
         now = datetime.now(IST).isoformat()
         db.execute(
             "INSERT INTO sync_state(key,value) VALUES('corporate_actions_last_run',?) "

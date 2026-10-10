@@ -153,6 +153,7 @@ def _valid_ohlc(open_price, high, low, close, volume=0) -> bool:
         and volume_value >= 0
     )
 
+
 def _number(row: dict, *keys: str, integer: bool = False):
     for key in keys:
         raw = row.get(key)

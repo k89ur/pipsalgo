@@ -26,6 +26,7 @@ export function passkeySupported(): boolean {
 function registrationOptionsForBrowser(options: Record<string, any>): PublicKeyCredentialCreationOptions {
   return {
     ...options,
+    rp: options.rp,
     challenge: base64urlToBuffer(options.challenge),
     user: {
       ...options.user,

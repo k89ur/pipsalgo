@@ -12,7 +12,8 @@ from .recovery_code import RecoveryCode
 from .session import Session
 from .totp_credential import TotpCredential
 from .totp_login_challenge import TotpLoginChallenge
+from .totp_disable_challenge import TotpDisableChallenge
 from .user import User
 
 __all__ = [
-    "PasswordResetToken","PasskeySignupChallenge", "OAuthAccount", "OAuthState", "EmailVerificationToken", "PasswordCredential", "RecoveryCode", "Passkey", "PasskeyChallenge", "Session", "TotpCredential", "TotpLoginChallenge", "User"]
+    "PasswordResetToken","PasskeySignupChallenge", "OAuthAccount", "OAuthState", "EmailVerificationToken", "PasswordCredential", "RecoveryCode", "Passkey", "PasskeyChallenge", "Session", "TotpCredential", "TotpLoginChallenge", "TotpDisableChallenge", "User"]

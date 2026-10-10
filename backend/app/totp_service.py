@@ -26,7 +26,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.db.database import SessionLocal
-from app.db.models import TotpCredential, TotpLoginChallenge, User
+from app.db.models import RecoveryCode, TotpCredential, TotpDisableChallenge, TotpLoginChallenge, User
 
 
 TOTP_PERIOD_SECONDS = 30
@@ -35,6 +35,8 @@ TOTP_SECRET_BYTES = 20
 TOTP_SETUP_TTL_SECONDS = 10 * 60
 TOTP_LOGIN_TTL_SECONDS = 5 * 60
 TOTP_MAX_LOGIN_ATTEMPTS = 5
+TOTP_DISABLE_TTL_SECONDS = 15 * 60
+TOTP_DISABLE_RESEND_COOLDOWN_SECONDS = 60
 
 _DEFAULT_KEY_FILE = Path(__file__).resolve().parents[2] / ".pipsgox" / "totp_encryption.key"
 
@@ -169,6 +171,14 @@ def _challenge_hash(challenge: str) -> str:
     return hashlib.sha256(challenge.encode("utf-8")).hexdigest()
 
 
+def _email_hash(email: str) -> bytes:
+    return hashlib.sha256(str(email).strip().lower().encode("utf-8")).digest()
+
+
+def _disable_token_hash(token: str) -> bytes:
+    return hashlib.sha256(token.encode("utf-8")).digest()
+
+
 def _secret_exists(db: Session, user_id: int) -> TotpCredential | None:
     return db.scalar(
         select(TotpCredential).where(TotpCredential.user_id == int(user_id))
@@ -176,8 +186,18 @@ def _secret_exists(db: Session, user_id: int) -> TotpCredential | None:
 
 
 def status(user_id: int) -> dict[str, object]:
+    now = datetime.now(timezone.utc)
     with _require_db()() as db:
         credential = _secret_exists(db, user_id)
+        if (
+            credential is not None
+            and not credential.enabled
+            and credential.setup_expires_at is not None
+            and credential.setup_expires_at <= now
+        ):
+            db.delete(credential)
+            db.commit()
+            credential = None
         return {
             "enabled": bool(credential and credential.enabled),
             "configured": credential is not None,
@@ -197,18 +217,21 @@ def setup(user_id: int) -> dict[str, object]:
         if existing is not None and existing.enabled:
             raise ValueError("Authenticator app is already enabled.")
 
+        setup_expires_at = now + timedelta(seconds=TOTP_SETUP_TTL_SECONDS)
         if existing is None:
             credential = TotpCredential(
                 user_id=int(user_id),
                 secret_encrypted=_encrypt_secret(secret),
                 enabled=False,
                 confirmed_at=None,
+                setup_expires_at=setup_expires_at,
             )
             db.add(credential)
         else:
             existing.secret_encrypted = _encrypt_secret(secret)
             existing.enabled = False
             existing.confirmed_at = None
+            existing.setup_expires_at = setup_expires_at
             existing.last_used_at = None
         db.commit()
 
@@ -248,30 +271,58 @@ def setup(user_id: int) -> dict[str, object]:
 
 
 def confirm_setup(user_id: int, code: str) -> bool:
+    now = datetime.now(timezone.utc)
     with _require_db()() as db:
         credential = _secret_exists(db, user_id)
         if credential is None:
             raise ValueError("Start authenticator setup first.")
+
+        # Setup expiry is enforced server-side, not only displayed by the UI.
+        # An unconfirmed credential is never allowed to become enabled after
+        # its setup window has elapsed.
+        if credential.enabled:
+            raise ValueError("Authenticator app is already enabled.")
+        if credential.setup_expires_at is None or credential.setup_expires_at <= now:
+            db.delete(credential)
+            db.commit()
+            raise ValueError("Authenticator setup expired. Start setup again.")
 
         secret = _decrypt_secret(str(credential.secret_encrypted))
         if not verify_code(secret, code):
             raise ValueError("Invalid authenticator code.")
 
         credential.enabled = True
-        credential.confirmed_at = datetime.now(timezone.utc)
-        credential.last_used_at = datetime.now(timezone.utc)
+        credential.confirmed_at = now
+        credential.setup_expires_at = None
+        credential.last_used_at = now
         db.commit()
 
     return True
 
 
-def disable(user_id: int, code: str) -> bool:
+def request_disable(user_id: int, code: str) -> dict[str, object]:
+    """Verify TOTP and create an email-confirmation challenge.
+
+    Disabling TOTP is deliberately a two-step operation: possession of the
+    current authenticator code starts the request, while possession of the
+    already-verified account email completes it.
+    """
+    from app.email_service import send_totp_disable_confirmation_email
+
+    now = datetime.now(timezone.utc)
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = _disable_token_hash(raw_token)
+
     with _require_db()() as db:
         user = db.scalar(
             select(User).where(User.id == int(user_id)).with_for_update()
         )
         if user is None:
             raise ValueError("User account does not exist.")
+        if not user.email or not user.email_verified:
+            raise ValueError(
+                "A verified email address is required before disabling the authenticator app."
+            )
 
         credential = _secret_exists(db, user_id)
         if credential is None or not credential.enabled:
@@ -286,10 +337,129 @@ def disable(user_id: int, code: str) -> bool:
         # TOTP-only account.
         require_another_primary_method(db, int(user_id), "__totp__")
 
-        db.delete(credential)
+        latest = db.scalar(
+            select(TotpDisableChallenge)
+            .where(TotpDisableChallenge.user_id == int(user_id))
+            .order_by(TotpDisableChallenge.created_at.desc())
+            .limit(1)
+        )
+        if latest is not None and latest.sent_at:
+            elapsed = (now - latest.sent_at).total_seconds()
+            if elapsed < TOTP_DISABLE_RESEND_COOLDOWN_SECONDS:
+                remaining = max(
+                    1,
+                    int(TOTP_DISABLE_RESEND_COOLDOWN_SECONDS - elapsed),
+                )
+                raise ValueError(
+                    f"Please wait {remaining} seconds before requesting another confirmation email."
+                )
+
+        # Only the newest outstanding confirmation may be used.
+        db.execute(
+            delete(TotpDisableChallenge).where(
+                TotpDisableChallenge.user_id == int(user_id)
+            )
+        )
+        db.add(
+            TotpDisableChallenge(
+                user_id=int(user_id),
+                token_hash=token_hash,
+                email_hash=_email_hash(email),
+                expires_at=now + timedelta(seconds=TOTP_DISABLE_TTL_SECONDS),
+                sent_at=now,
+            )
+        )
+        email = str(user.email)
+        expires_at = now + timedelta(seconds=TOTP_DISABLE_TTL_SECONDS)
         db.commit()
 
-    return True
+    try:
+        send_totp_disable_confirmation_email(email=email, token=raw_token)
+    except Exception:
+        with _require_db()() as db:
+            db.execute(
+                delete(TotpDisableChallenge).where(
+                    TotpDisableChallenge.token_hash == token_hash
+                )
+            )
+            db.commit()
+        raise
+
+    return {
+        "email": email,
+        "sent": True,
+        "expires_at": int(expires_at.timestamp()),
+    }
+
+
+def confirm_disable(token: str) -> dict[str, object]:
+    """Consume a valid email confirmation and disable TOTP atomically."""
+    token = str(token).strip()
+    if not token or len(token) > 256:
+        raise ValueError("Invalid TOTP disable confirmation.")
+
+    now = datetime.now(timezone.utc)
+    token_hash = _disable_token_hash(token)
+
+    with _require_db()() as db:
+        row = db.execute(
+            select(TotpDisableChallenge, User)
+            .join(User, User.id == TotpDisableChallenge.user_id)
+            .where(TotpDisableChallenge.token_hash == token_hash)
+            .with_for_update()
+        ).first()
+
+        if row is None:
+            raise ValueError("This TOTP disable confirmation is invalid or has expired.")
+
+        challenge = row[0]
+        user = row[1]
+
+        if challenge.used_at is not None or challenge.expires_at <= now:
+            db.delete(challenge)
+            db.commit()
+            raise ValueError("This TOTP disable confirmation is invalid or has expired.")
+
+        if not user.email or not user.email_verified:
+            db.delete(challenge)
+            db.commit()
+            raise ValueError("Email verification is required before disabling the authenticator app.")
+
+        if not hmac.compare_digest(
+            bytes(challenge.email_hash),
+            _email_hash(str(user.email)),
+        ):
+            db.delete(challenge)
+            db.commit()
+            raise ValueError("This TOTP disable confirmation is no longer valid. Request a new confirmation email.")
+
+        credential = _secret_exists(db, int(user.id))
+        if credential is None or not credential.enabled:
+            db.delete(challenge)
+            db.commit()
+            raise ValueError("Authenticator app is no longer enabled.")
+
+        # Keep the account protected by a primary sign-in method even if the
+        # account changed after the confirmation email was issued.
+        require_another_primary_method(db, int(user.id), "__totp__")
+
+        db.delete(credential)
+        db.execute(
+            delete(RecoveryCode).where(RecoveryCode.user_id == int(user.id))
+        )
+        db.delete(challenge)
+        db.execute(
+            delete(TotpDisableChallenge).where(
+                TotpDisableChallenge.user_id == int(user.id)
+            )
+        )
+        db.commit()
+
+        return {
+            "user_id": int(user.id),
+            "username": str(user.username or ""),
+            "email": str(user.email),
+        }
 
 
 def create_login_challenge(user_id: int) -> tuple[str, int]:

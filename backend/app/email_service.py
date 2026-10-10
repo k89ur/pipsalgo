@@ -191,7 +191,11 @@ def send_password_reset_email(*, email: str, token: str) -> None:
 
 def send_verification_email(*, email: str, token: str) -> None:
     web_url = os.getenv("PIPSGOX_WEB_URL", "http://localhost:3001").rstrip("/")
-    link = f"{web_url}/api/auth/email/verify?token={quote(token, safe='')}"
+    # Keep the one-time verification token in the URL fragment. Browsers do not
+    # send fragments in HTTP requests, so the token is not exposed to server
+    # access logs, reverse proxies, or Referer headers. The frontend extracts
+    # it and submits it to the verification endpoint in a POST body.
+    link = f"{web_url}/#email_verify_token={quote(token, safe='')}"
     from_email = _required("PIPSGOX_EMAIL_FROM")
     safe_link = html.escape(link, quote=True)
 
@@ -220,3 +224,45 @@ def send_verification_email(*, email: str, token: str) -> None:
         text_body=text_body,
         html_body=html_body,
     )
+
+def send_totp_disable_confirmation_email(*, email: str, token: str) -> None:
+    web_url = os.getenv("PIPSGOX_WEB_URL", "http://localhost:3001").rstrip("/")
+    # Keep the one-time token in the URL fragment. The browser removes the
+    # fragment before making the initial request, and the frontend submits
+    # the token to the confirmation endpoint in a POST body.
+    link = f"{web_url}/#totp_disable_token={quote(token, safe='')}"
+    from_email = _required("PIPSGOX_EMAIL_FROM")
+    safe_link = html.escape(link, quote=True)
+
+    text_body = (
+        "A request was made to disable the PIPSGOX authenticator app.
+
+"
+        f"Confirm the request by opening this link:
+{link}
+
+"
+        "This confirmation expires in 15 minutes and can only be used once.
+"
+        "If you did not request this, ignore this email and keep your authenticator enabled."
+    )
+    html_body = (
+        "<!doctype html><html><body>"
+        "<h2>Confirm disabling your PIPSGOX authenticator</h2>"
+        "<p>A request was made to disable the authenticator app on your account.</p>"
+        f'<p><a href="{safe_link}" '
+        'style="display:inline-block;padding:12px 18px;background:#b42318;color:#fff;'
+        'text-decoration:none;border-radius:6px;font-weight:600;">CONFIRM DISABLE</a></p>'
+        "<p>This confirmation expires in 15 minutes and can only be used once.</p>"
+        "<p>If you did not request this, ignore this email and keep your authenticator enabled.</p>"
+        "</body></html>"
+    )
+
+    _send(
+        to_email=email,
+        from_email=from_email,
+        subject="Confirm disabling your PIPSGOX authenticator",
+        text_body=text_body,
+        html_body=html_body,
+    )
+\n

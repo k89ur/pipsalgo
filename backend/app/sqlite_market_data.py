@@ -19,6 +19,7 @@ from typing import Iterable
 import requests
 
 from app.providers.base import Candle, Quote
+from app.corporate_actions import adjust_candles, initialize_corporate_actions, action_status
 
 IST = timezone(timedelta(hours=5, minutes=30))
 # Five calendar years of EOD history, including leap days.
@@ -96,6 +97,7 @@ def initialize() -> None:
                 updated_at TEXT NOT NULL
             );
             """)
+            initialize_corporate_actions(db)
             # Reset empty markers created by the first five-year rollout, which
             # used the modern URL for pre-UDiFF dates. Do this exactly once.
             marker = db.execute(
@@ -476,7 +478,7 @@ def start_background_sync() -> None:
 class SQLiteMarketDataProvider:
     name = "sqlite"
 
-    def get_history(self, symbol: str, timeframe: str, limit: int, *, start=None, end=None) -> list[Candle]:
+    def get_history(self, symbol: str, timeframe: str, limit: int, *, start=None, end=None, adjustment: str = "raw") -> list[Candle]:
         if timeframe not in {"D", "W", "M"}:
             raise ValueError("Local SQLite database contains daily EOD candles only. Intraday timeframes require intraday data.")
         clean = _clean_symbol(symbol)
@@ -498,7 +500,7 @@ class SQLiteMarketDataProvider:
             open=float(row["open"]), high=float(row["high"]), low=float(row["low"]),
             close=float(row["close"]), volume=int(row["volume"] or 0)
         ) for row in rows]
-        if timeframe in {"W", "M"}:
+        with _connect() as db:\n            candles = adjust_candles(db, clean, candles, adjustment)\n        if timeframe in {"W", "M"}:
             grouped = {}
             for candle, row in zip(candles, rows):
                 day = date.fromisoformat(row["trading_date"])
@@ -606,7 +608,7 @@ def symbol_history_status(symbol: str) -> dict:
 def sync_status() -> dict:
     initialize()
     with _connect() as db:
-        count = db.execute("SELECT COUNT(*) FROM daily_bars").fetchone()[0]
+        initialize_corporate_actions(db)\n        corporate = action_status(db)\n        count = db.execute("SELECT COUNT(*) FROM daily_bars").fetchone()[0]
         symbols = db.execute("SELECT COUNT(DISTINCT symbol) FROM daily_bars").fetchone()[0]
         first = db.execute("SELECT MIN(trading_date) FROM daily_bars").fetchone()[0]
         last = db.execute("SELECT MAX(trading_date) FROM daily_bars").fetchone()[0]
@@ -615,7 +617,7 @@ def sync_status() -> dict:
         index_count = db.execute("SELECT COUNT(*) FROM daily_bars WHERE symbol IN ('NIFTY','BANKNIFTY','FINNIFTY','NIFTYNXT50','MIDCPNIFTY','NIFTYMIDCAP50','NIFTYIT','NIFTYAUTO','NIFTYPHARMA','NIFTYFMCG','NIFTYMETAL','NIFTYREALTY','NIFTYENERGY','NIFTYPSUBANK','NIFTYPRIVATEBANK')").fetchone()[0]
         index_symbols = db.execute("SELECT COUNT(DISTINCT symbol) FROM daily_bars WHERE symbol IN ('NIFTY','BANKNIFTY','FINNIFTY','NIFTYNXT50','MIDCPNIFTY','NIFTYMIDCAP50','NIFTYIT','NIFTYAUTO','NIFTYPHARMA','NIFTYFMCG','NIFTYMETAL','NIFTYREALTY','NIFTYENERGY','NIFTYPSUBANK','NIFTYPRIVATEBANK')").fetchone()[0]
         index_errors = [dict(row) for row in db.execute("SELECT trading_date,detail FROM index_sync_dates WHERE status='error' ORDER BY trading_date DESC LIMIT 5")]
-    return {"database": str(_db_path()), "bars": count, "symbols": symbols, "first_date": first, "last_date": last, "index_bars": index_count, "index_symbols": index_symbols, "index_recent_errors": index_errors, **state, "recent_errors": errors}
+    return {"database": str(_db_path()), "corporate_actions": corporate, "bars": count, "symbols": symbols, "first_date": first, "last_date": last, "index_bars": index_count, "index_symbols": index_symbols, "index_recent_errors": index_errors, **state, "recent_errors": errors}
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import date
 
 from app.sqlite_market_data import _parse_index_csv
 
@@ -11,10 +12,10 @@ class MarketDataValidationTests(unittest.TestCase):
 NIFTY 50,25000,25100,24900,25050,0,09-10-2026
 NIFTY 50 USD,8485.25,8774.55,8348.00,8347.84,0,15-09-2026
 """
-        rows = _parse_index_csv(payload, __import__("datetime").date(2026, 10, 9))
+        rows = _parse_index_csv(payload, date(2026, 10, 9))
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][0], "NIFTY")
-        self.assertEqual(rows[0][3], 24900)
+        self.assertEqual(rows[0][4], 24900)
         self.assertEqual(rows[0][5], 25050)
 
     def test_index_parser_rejects_impossible_ohlc_relationships(self):

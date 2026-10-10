@@ -139,6 +139,21 @@ def _clean_symbol(value: str):
     return aliases.get(compact, symbol)
 
 
+def _valid_ohlc(open_price, high, low, close, volume=0) -> bool:
+    """Return whether a parsed OHLCV candle satisfies basic market-data invariants."""
+    try:
+        values = (float(open_price), float(high), float(low), float(close), int(volume or 0))
+    except (TypeError, ValueError, OverflowError):
+        return False
+    open_value, high_value, low_value, close_value, volume_value = values
+    return (
+        all(value > 0 for value in values[:4])
+        and high_value >= max(open_value, low_value, close_value)
+        and low_value <= min(open_value, high_value, close_value)
+        and volume_value >= 0
+    )
+
+
 def _number(row: dict, *keys: str, integer: bool = False):
     for key in keys:
         raw = row.get(key)
@@ -172,7 +187,7 @@ def _parse_bhavcopy(payload: bytes, requested_date: date) -> list[tuple]:
                 low = _number(row, "LwPric", "LOW_PRICE", "LOW")
                 close = _number(row, "ClsPric", "CLOSE_PRICE", "CLOSE")
                 volume = _number(row, "TtlTradgVol", "TtlTrfVol", "TOTTRDQTY", "NO_OF_SHRS", integer=True)
-                if any(value is None or value <= 0 for value in (open_price, high, low, close)):
+                if not _valid_ohlc(open_price, high, low, close, volume):
                     continue
                 parsed.append((symbol, requested_date.isoformat(), open_price, high, low, close, volume or 0, series))
             # Prefer EQ over BE when the same symbol occurs in both series.
@@ -225,9 +240,11 @@ def _index_symbol(name: str) -> str:
     }
     if normalized in aliases:
         return aliases[normalized]
-    if "FUTURES" in normalized or "STRATEGY" in normalized or "TOTAL RETURNS" in normalized:
-        return ""
-    return "".join(ch for ch in normalized if ch.isalnum())
+    # Keep the index store restricted to the 15 supported cash indices. The
+    # archive can also contain currency-denominated variants (e.g. NIFTY 50 USD),
+    # futures, strategies and total-return indices which are not in this app's
+    # configured index universe.
+    return ""
 
 
 def _parse_index_csv(payload: bytes, requested_date: date) -> list[tuple]:
@@ -244,7 +261,7 @@ def _parse_index_csv(payload: bytes, requested_date: date) -> list[tuple]:
         low = _number(row, "Low Index Value", "Low")
         close = _number(row, "Closing Index Value", "Closing", "Close")
         volume = _number(row, "Volume", integer=True)
-        if any(value is None or value <= 0 for value in (open_price, high, low, close)):
+        if not _valid_ohlc(open_price, high, low, close, volume):
             continue
         raw_date = str(row.get("Index Date") or "").strip()
         try:
@@ -562,7 +579,9 @@ class SQLiteMarketDataProvider:
             open=float(row["open"]), high=float(row["high"]), low=float(row["low"]),
             close=float(row["close"]), volume=int(row["volume"] or 0)
         ) for row in rows]
-        with _connect() as db:\n            candles = adjust_candles(db, clean, candles, adjustment)\n        if timeframe in {"W", "M"}:
+        with _connect() as db:
+            candles = adjust_candles(db, clean, candles, adjustment)
+        if timeframe in {"W", "M"}:
             grouped = {}
             for candle, row in zip(candles, rows):
                 day = date.fromisoformat(row["trading_date"])
@@ -670,7 +689,9 @@ def symbol_history_status(symbol: str) -> dict:
 def sync_status() -> dict:
     initialize()
     with _connect() as db:
-        initialize_corporate_actions(db)\n        corporate = action_status(db)\n        count = db.execute("SELECT COUNT(*) FROM daily_bars").fetchone()[0]
+        initialize_corporate_actions(db)
+        corporate = action_status(db)
+        count = db.execute("SELECT COUNT(*) FROM daily_bars").fetchone()[0]
         symbols = db.execute("SELECT COUNT(DISTINCT symbol) FROM daily_bars").fetchone()[0]
         first = db.execute("SELECT MIN(trading_date) FROM daily_bars").fetchone()[0]
         last = db.execute("SELECT MAX(trading_date) FROM daily_bars").fetchone()[0]

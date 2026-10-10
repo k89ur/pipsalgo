@@ -2480,7 +2480,7 @@ json.dumps(_result)`;
 
         <div className="top-control-hub" aria-label="Chart and workspace controls">
           <div className="top-control-group top-timeframe-group">
-            {(["1m", "3m", "5m", "15m", "30m", "1h", "D", "W", "M"] as Timeframe[]).map((item) => (
+            {(["D", "W", "M"] as Timeframe[]).map((item) => (
               <button
                 key={item}
                 className={"top-hub-button top-timeframe-button " + (timeframe === item ? "active" : "")}

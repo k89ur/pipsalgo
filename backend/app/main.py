@@ -27,6 +27,7 @@ from app import auth, broker_accounts, security_audit, diagnostics, oidc, passke
 from app.broker_manager import BrokerManager
 from app.ma44_scanner import scanner as ma44_scanner
 from app.market_data_master import configured_source, market_data_master
+from app.sqlite_market_data import initialize as initialize_sqlite_market_data, start_background_sync, sync_status as sqlite_market_data_status
 
 load_dotenv()
 
@@ -39,6 +40,14 @@ def _ensure_background_scanners() -> None:
     # login can compete with the scanner for CPU/network resources.
     ma44_scanner.start()
 logger = logging.getLogger("pipsgox.market_data")
+
+
+@app.on_event("startup")
+def _start_sqlite_market_data() -> None:
+    # SQLite EOD storage is the only chart/quote data source. Start the
+    # resumable NSE backfill in a daemon thread so auth/API startup stays fast.
+    initialize_sqlite_market_data()
+    start_background_sync()
 
 _trusted_hosts = [
     item.strip() for item in os.getenv(
@@ -1948,6 +1957,12 @@ def health() -> dict[str, object]:
         "data_provider": configured_source(),
         **readiness,
     }
+
+
+@app.get("/api/market-data/status")
+def local_market_data_status() -> dict[str, object]:
+    """Expose local database coverage and recent sync errors for troubleshooting."""
+    return sqlite_market_data_status()
 
 
 @app.get("/api/scanner/44ma")

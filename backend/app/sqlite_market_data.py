@@ -22,6 +22,7 @@ from app.providers.base import Candle, Quote
 
 IST = timezone(timedelta(hours=5, minutes=30))
 BASE_URL = "https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{date}_F_0000.csv.zip"
+INDEX_BASE_URL = "https://archives.nseindia.com/content/indices/ind_close_all_{date}.csv"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/153 Safari/537.36",
     "Accept": "application/zip,text/csv,*/*",
@@ -42,13 +43,14 @@ def _db_path() -> Path:
 def _connect() -> sqlite3.Connection:
     connection = sqlite3.connect(str(_db_path()), timeout=30)
     connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA journal_mode=WAL")
+    # WAL is enabled once in initialize(); do not renegotiate it per request.
     connection.execute("PRAGMA busy_timeout=30000")
     return connection
 
 
 def initialize() -> None:
     with _connect() as db:
+        db.execute("PRAGMA journal_mode=WAL")
         db.executescript("""
         CREATE TABLE IF NOT EXISTS daily_bars (
             symbol TEXT NOT NULL,
@@ -72,6 +74,13 @@ def initialize() -> None:
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS index_sync_dates (
+            trading_date TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            rows_written INTEGER NOT NULL DEFAULT 0,
+            detail TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
         """)
 
 
@@ -86,7 +95,15 @@ def _clean_symbol(value: str) -> str:
         symbol = symbol[:-3]
     if symbol.endswith(".BO"):
         symbol = symbol[:-3]
-    return symbol
+    compact = "".join(ch for ch in symbol if ch.isalnum())
+    aliases = {
+        "NIFTY": "NIFTY", "NIFTY50": "NIFTY",
+        "NIFTYBANK": "BANKNIFTY", "BANKNIFTY": "BANKNIFTY",
+        "NIFTYFINANCIALSERVICES": "FINNIFTY", "FINNIFTY": "FINNIFTY",
+        "NIFTYNEXT50": "NIFTYNXT50", "NIFTYNXT50": "NIFTYNXT50",
+        "NIFTYMIDCAPSELECT": "MIDCPNIFTY", "MIDCPNIFTY": "MIDCPNIFTY",
+    }
+    return aliases.get(compact, symbol)
 
 
 def _number(row: dict, *keys: str, integer: bool = False):
@@ -146,6 +163,162 @@ def _fetch_date(session: requests.Session, trading_date: date) -> list[tuple]:
     if not response.content:
         return []
     return _parse_bhavcopy(response.content, trading_date)
+
+
+def _index_symbol(name: str) -> str:
+    normalized = " ".join((name or "").strip().upper().replace("&", " AND ").split())
+    aliases = {
+        "NIFTY 50": "NIFTY",
+        "NIFTY BANK": "BANKNIFTY",
+        "NIFTY FINANCIAL SERVICES": "FINNIFTY",
+        "NIFTY NEXT 50": "NIFTYNXT50",
+        "NIFTY MIDCAP SELECT": "MIDCPNIFTY",
+        "NIFTY MIDCAP 50": "NIFTYMIDCAP50",
+        "NIFTY IT": "NIFTYIT",
+        "NIFTY AUTO": "NIFTYAUTO",
+        "NIFTY PHARMA": "NIFTYPHARMA",
+        "NIFTY FMCG": "NIFTYFMCG",
+        "NIFTY METAL": "NIFTYMETAL",
+        "NIFTY REALTY": "NIFTYREALTY",
+        "NIFTY ENERGY": "NIFTYENERGY",
+        "NIFTY PSU BANK": "NIFTYPSUBANK",
+        "NIFTY PRIVATE BANK": "NIFTYPRIVATEBANK",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    if "FUTURES" in normalized or "STRATEGY" in normalized or "TOTAL RETURNS" in normalized:
+        return ""
+    return "".join(ch for ch in normalized if ch.isalnum())
+
+
+def _parse_index_csv(payload: bytes, requested_date: date) -> list[tuple]:
+    stream = io.TextIOWrapper(io.BytesIO(payload), encoding="utf-8-sig", newline="")
+    reader = csv.DictReader(stream)
+    parsed = []
+    for raw in reader:
+        row = {(key or "").strip(): value for key, value in raw.items()}
+        symbol = _index_symbol(row.get("Index Name", ""))
+        if not symbol:
+            continue
+        open_price = _number(row, "Open Index Value", "Open")
+        high = _number(row, "High Index Value", "High")
+        low = _number(row, "Low Index Value", "Low")
+        close = _number(row, "Closing Index Value", "Closing", "Close")
+        volume = _number(row, "Volume", integer=True)
+        if any(value is None or value <= 0 for value in (open_price, high, low, close)):
+            continue
+        raw_date = str(row.get("Index Date") or "").strip()
+        try:
+            day = datetime.strptime(raw_date, "%d-%m-%Y").date()
+        except ValueError:
+            day = requested_date
+        parsed.append((symbol, day.isoformat(), open_price, high, low, close, volume or 0))
+    unique = {}
+    for row in parsed:
+        unique.setdefault(row[0], row)
+    return list(unique.values())
+
+
+def _fetch_index_date(session: requests.Session, trading_date: date) -> list[tuple]:
+    url = INDEX_BASE_URL.format(date=trading_date.strftime("%d%m%Y"))
+    response = session.get(url, headers=HEADERS, timeout=25)
+    if response.status_code == 404:
+        return []
+    if response.status_code == 429 or response.status_code >= 500:
+        time.sleep(1.5)
+        response = session.get(url, headers=HEADERS, timeout=30)
+    if response.status_code != 200:
+        raise RuntimeError(f"NSE index archive HTTP {response.status_code} for {trading_date.isoformat()}")
+    if len(response.content) < 500:
+        raise RuntimeError(f"NSE index archive returned an unexpectedly small response for {trading_date.isoformat()}")
+    return _parse_index_csv(response.content, trading_date)
+
+
+def _index_already_processed(day: date, *, retry_empty: bool = False) -> bool:
+    with _connect() as db:
+        row = db.execute("SELECT status FROM index_sync_dates WHERE trading_date=?", (day.isoformat(),)).fetchone()
+        if not row:
+            return False
+        return row["status"] == "ok" or (row["status"] == "empty" and not retry_empty)
+
+
+def sync_index_day(day: date, session: requests.Session | None = None) -> int:
+    initialize()
+    own_session = session is None
+    session = session or requests.Session()
+    try:
+        rows = _fetch_index_date(session, day)
+        now = datetime.now(IST).isoformat()
+        with _connect() as db:
+            if rows:
+                db.executemany("""
+                    INSERT INTO daily_bars(symbol,trading_date,open,high,low,close,volume)
+                    VALUES(?,?,?,?,?,?,?)
+                    ON CONFLICT(symbol,trading_date) DO UPDATE SET
+                      open=excluded.open, high=excluded.high, low=excluded.low,
+                      close=excluded.close, volume=excluded.volume
+                """, rows)
+            db.execute("""
+                INSERT INTO index_sync_dates(trading_date,status,rows_written,detail,updated_at)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(trading_date) DO UPDATE SET status=excluded.status,
+                  rows_written=excluded.rows_written,detail=excluded.detail,updated_at=excluded.updated_at
+            """, (day.isoformat(), "ok" if rows else "empty", len(rows), "", now))
+        return len(rows)
+    except Exception as exc:
+        with _connect() as db:
+            db.execute("""
+                INSERT INTO index_sync_dates(trading_date,status,rows_written,detail,updated_at)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(trading_date) DO UPDATE SET status='error',detail=excluded.detail,updated_at=excluded.updated_at
+            """, (day.isoformat(), "error", 0, str(exc)[:500], datetime.now(IST).isoformat()))
+        raise
+    finally:
+        if own_session:
+            session.close()
+
+
+def sync_indices_recent(days: int = 10) -> dict:
+    initialize()
+    results = {"dates_checked": 0, "rows_written": 0, "errors": []}
+    session = requests.Session()
+    try:
+        today = datetime.now(IST).date()
+        for offset in range(days - 1, -1, -1):
+            day = today - timedelta(days=offset)
+            if day.weekday() >= 5 or _index_already_processed(day, retry_empty=True):
+                continue
+            results["dates_checked"] += 1
+            try:
+                results["rows_written"] += sync_index_day(day, session)
+            except Exception as exc:
+                results["errors"].append(f"{day.isoformat()}: {exc}")
+            time.sleep(0.1)
+    finally:
+        session.close()
+    return results
+
+
+def backfill_indices(days: int = 365) -> dict:
+    initialize()
+    results = {"dates_checked": 0, "rows_written": 0, "errors": []}
+    session = requests.Session()
+    today = datetime.now(IST).date()
+    start = today - timedelta(days=max(1, days) - 1)
+    try:
+        for offset in range((today - start).days + 1):
+            day = start + timedelta(days=offset)
+            if day.weekday() >= 5 or _index_already_processed(day):
+                continue
+            results["dates_checked"] += 1
+            try:
+                results["rows_written"] += sync_index_day(day, session)
+            except Exception as exc:
+                results["errors"].append(f"{day.isoformat()}: {exc}")
+            time.sleep(0.1)
+    finally:
+        session.close()
+    return results
 
 
 def _already_processed(day: date, *, retry_empty: bool = False) -> bool:
@@ -249,7 +422,9 @@ def start_background_sync() -> None:
     def worker():
         initialize()
         sync_recent(10)
+        sync_indices_recent(10)
         backfill(365)
+        backfill_indices(365)
         while True:
             now = datetime.now(IST)
             target = now.replace(hour=16, minute=10, second=0, microsecond=0)
@@ -259,6 +434,7 @@ def start_background_sync() -> None:
             # Run after the cash market close; skip weekend days.
             if datetime.now(IST).weekday() < 5:
                 sync_recent(10)
+                sync_indices_recent(10)
                 cutoff = (datetime.now(IST).date() - timedelta(days=365)).isoformat()
                 with _connect() as db:
                     db.execute("DELETE FROM daily_bars WHERE trading_date < ?", (cutoff,))
@@ -273,7 +449,6 @@ class SQLiteMarketDataProvider:
         if timeframe not in {"D", "W", "M"}:
             raise ValueError("Local SQLite database contains daily EOD candles only. Intraday timeframes require intraday data.")
         clean = _clean_symbol(symbol)
-        initialize()
         params: list = [clean]
         query = "SELECT trading_date,open,high,low,close,volume FROM daily_bars WHERE symbol=?"
         if start is not None:
@@ -375,7 +550,10 @@ def sync_status() -> dict:
         last = db.execute("SELECT MAX(trading_date) FROM daily_bars").fetchone()[0]
         state = {row["key"]: row["value"] for row in db.execute("SELECT key,value FROM sync_state")}
         errors = [dict(row) for row in db.execute("SELECT trading_date,detail FROM sync_dates WHERE status='error' ORDER BY trading_date DESC LIMIT 5")]
-    return {"database": str(_db_path()), "bars": count, "symbols": symbols, "first_date": first, "last_date": last, **state, "recent_errors": errors}
+        index_count = db.execute("SELECT COUNT(*) FROM daily_bars WHERE symbol IN ('NIFTY','BANKNIFTY','FINNIFTY','NIFTYNXT50','MIDCPNIFTY','NIFTYMIDCAP50','NIFTYIT','NIFTYAUTO','NIFTYPHARMA','NIFTYFMCG','NIFTYMETAL','NIFTYREALTY','NIFTYENERGY','NIFTYPSUBANK','NIFTYPRIVATEBANK')").fetchone()[0]
+        index_symbols = db.execute("SELECT COUNT(DISTINCT symbol) FROM daily_bars WHERE symbol IN ('NIFTY','BANKNIFTY','FINNIFTY','NIFTYNXT50','MIDCPNIFTY','NIFTYMIDCAP50','NIFTYIT','NIFTYAUTO','NIFTYPHARMA','NIFTYFMCG','NIFTYMETAL','NIFTYREALTY','NIFTYENERGY','NIFTYPSUBANK','NIFTYPRIVATEBANK')").fetchone()[0]
+        index_errors = [dict(row) for row in db.execute("SELECT trading_date,detail FROM index_sync_dates WHERE status='error' ORDER BY trading_date DESC LIMIT 5")]
+    return {"database": str(_db_path()), "bars": count, "symbols": symbols, "first_date": first, "last_date": last, "index_bars": index_count, "index_symbols": index_symbols, "index_recent_errors": index_errors, **state, "recent_errors": errors}
 
 
 if __name__ == "__main__":

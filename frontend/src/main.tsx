@@ -268,10 +268,6 @@ function formatWatchVolume(value: number | null | undefined): string {
   return Math.round(value).toLocaleString("en-IN");
 }
 
-function formatWatchQuoteValue(value: number | null | undefined): string {
-  return value != null && Number.isFinite(value) && value > 0 ? value.toFixed(2) : "—";
-}
-
 function normalizeWatchItems(value: unknown): WatchItem[] {
   if (!Array.isArray(value)) return [];
 
@@ -2711,7 +2707,7 @@ json.dumps(_result)`;
                 <input className="watch-search" placeholder="Search symbols..." value={watchSearch}
                   onChange={(event) => setWatchSearch(event.target.value)} />
                 {watchImportMessage && <div className="watch-message">{watchImportMessage}</div>}
-                <div className="watch-columns"><span>SYMBOL</span><span>LAST</span><span>CHANGE %</span><span>VOL</span><span>BID / ASK</span><span></span></div>
+                <div className="watch-columns"><span>SYMBOL</span><span>LAST</span><span>CHANGE %</span><span>VOL</span><span></span></div>
                 <div className="watch-items">
                   {filteredWatchlist.map((item) => {
                 const liveQuote = liveQuotes[item.symbol];
@@ -2733,11 +2729,6 @@ json.dumps(_result)`;
                     </span>
                     <span className={`watch-volume ${liveQuote?.volume != null && liveQuote.volume <= 10000 ? "low-volume" : ""}`}>
                       {formatWatchVolume(liveQuote?.volume)}
-                    </span>
-                    <span className="watch-bid-ask">
-                      <span className="watch-bid-value">{formatWatchQuoteValue(liveQuote?.bid)}</span>
-                      <span className="watch-bid-ask-separator"> / </span>
-                      <span className="watch-ask-value">{formatWatchQuoteValue(liveQuote?.ask)}</span>
                     </span>
                   </button>
                   <button className="watch-remove" onClick={() => removeWatchSymbol(item.symbol)} aria-label={`Remove ${item.symbol}`}>×</button>

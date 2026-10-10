@@ -1086,6 +1086,36 @@ class Quote(BaseModel):
     ask: float | None = None
     source: str = "sqlite"
 
+def to_candle(item) -> Candle:
+    """Convert the provider candle dataclass into the API response model."""
+    return Candle(
+        time=int(item.time),
+        open=float(item.open),
+        high=float(item.high),
+        low=float(item.low),
+        close=float(item.close),
+        volume=int(item.volume or 0),
+    )
+
+
+def to_quote(item) -> Quote:
+    """Convert the provider quote dataclass into the API response model."""
+    return Quote(
+        symbol=str(item.symbol),
+        exchange=str(item.exchange),
+        last=float(item.last),
+        change=float(item.change),
+        change_percent=float(item.change_percent),
+        open=item.open,
+        high=item.high,
+        low=item.low,
+        volume=item.volume,
+        bid=item.bid,
+        ask=item.ask,
+        source=configured_source(),
+    )
+
+
 class QuotesRequest(BaseModel):
     account_id: int | None = None
     symbols: list[str]

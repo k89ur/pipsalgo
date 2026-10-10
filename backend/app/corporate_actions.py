@@ -195,6 +195,14 @@ def action_status(db: sqlite3.Connection) -> dict[str, Any]:
         FROM corporate_actions WHERE ex_date >= date('now')
         ORDER BY ex_date LIMIT 100
     """)]
+    state = {}
+    try:
+        state = {row["key"]: row["value"] for row in db.execute(
+            "SELECT key, value FROM sync_state WHERE key LIKE 'corporate_actions_%'"
+        )}
+    except sqlite3.OperationalError:
+        # Corporate-action schema can also be used in isolated unit tests.
+        state = {}
     return {
         "total_events": sum(counts.values()),
         "verified_events": counts.get("verified", 0),
@@ -202,8 +210,10 @@ def action_status(db: sqlite3.Connection) -> dict[str, Any]:
         "rejected_events": counts.get("rejected", 0),
         "automatic_adjustment_types": sorted(SUPPORTED_PRICE_FACTOR_TYPES),
         "dividend_total_return": "not_yet_implemented",
-        "historical_import": "not_yet_implemented",
-        "automatic_nse_refresh": "not_yet_implemented",
+        "historical_import": state.get("corporate_actions_historical_status", "not_started"),
+        "automatic_nse_refresh": state.get("corporate_actions_last_status", "not_started"),
+        "last_refresh_at": state.get("corporate_actions_last_run"),
+        "last_refresh_error": state.get("corporate_actions_last_error", ""),
         "upcoming_events": upcoming,
     }
 

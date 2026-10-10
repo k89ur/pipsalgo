@@ -19,7 +19,10 @@ from typing import Iterable
 import requests
 
 from app.providers.base import Candle, Quote
-from app.corporate_actions import (\n    adjust_candles, initialize_corporate_actions, action_status,\n    refresh_nse_corporate_actions,\n)
+from app.corporate_actions import (
+    adjust_candles, initialize_corporate_actions, action_status,
+    refresh_nse_corporate_actions,
+)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 # Five calendar years of EOD history, including leap days.

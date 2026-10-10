@@ -1060,7 +1060,7 @@ def security_logout_all(request: Request, response: Response) -> dict[str, objec
     return {"revoked_sessions": count}
 
 
-Timeframe = Literal["1m", "3m", "5m", "15m", "30m", "1h", "D", "W", "M"]
+Timeframe = Literal["D", "W", "M"]
 
 
 class Candle(BaseModel):
@@ -1084,7 +1084,7 @@ class Quote(BaseModel):
     volume: int | None = None
     bid: float | None = None
     ask: float | None = None
-    source: str = "yfinance"
+    source: str = "sqlite"
 
 class QuotesRequest(BaseModel):
     account_id: int | None = None
@@ -2058,7 +2058,7 @@ def market_data_source() -> dict[str, object]:
     source = configured_source()
     return {
         "source": source,
-        "available_sources": ["yfinance", "nse", "bse"],
+        "available_sources": ["sqlite"],
         "broker_independent": True,
     }
 

@@ -21,6 +21,8 @@ import requests
 from app.providers.base import Candle, Quote
 
 IST = timezone(timedelta(hours=5, minutes=30))
+# Five calendar years of EOD history, including leap days.
+HISTORY_DAYS = 1826
 BASE_URL = "https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{date}_F_0000.csv.zip"
 INDEX_BASE_URL = "https://archives.nseindia.com/content/indices/ind_close_all_{date}.csv"
 HEADERS = {
@@ -299,7 +301,7 @@ def sync_indices_recent(days: int = 10) -> dict:
     return results
 
 
-def backfill_indices(days: int = 365) -> dict:
+def backfill_indices(days: int = HISTORY_DAYS) -> dict:
     initialize()
     results = {"dates_checked": 0, "rows_written": 0, "errors": []}
     session = requests.Session()
@@ -391,8 +393,8 @@ def sync_recent(days: int = 10) -> dict:
     return results
 
 
-def backfill(days: int = 365) -> dict:
-    """Resumable one-year daily backfill. Successful dates are never fetched twice."""
+def backfill(days: int = HISTORY_DAYS) -> dict:
+    """Resumable multi-year daily backfill. Successful dates are never fetched twice."""
     initialize()
     results = {"dates_checked": 0, "rows_written": 0, "errors": []}
     session = requests.Session()
@@ -411,20 +413,19 @@ def backfill(days: int = 365) -> dict:
             time.sleep(0.15)
     finally:
         session.close()
-    cutoff = (today - timedelta(days=365)).isoformat()
-    with _connect() as db:
-        db.execute("DELETE FROM daily_bars WHERE trading_date < ?", (cutoff,))
+    # Do not prune older rows: the database is intentionally a rolling five-year-plus
+    # archive. Backfill only inserts missing dates, so expanding history is resumable.
     return results
 
 
 def start_background_sync() -> None:
-    """Start one worker: refresh recent data, then fill the remaining year, then daily updates."""
+    """Refresh recent data first, then resumably backfill five years in the background."""
     def worker():
         initialize()
         sync_recent(10)
         sync_indices_recent(10)
-        backfill(365)
-        backfill_indices(365)
+        backfill(HISTORY_DAYS)
+        backfill_indices(HISTORY_DAYS)
         while True:
             now = datetime.now(IST)
             target = now.replace(hour=16, minute=10, second=0, microsecond=0)
@@ -435,9 +436,7 @@ def start_background_sync() -> None:
             if datetime.now(IST).weekday() < 5:
                 sync_recent(10)
                 sync_indices_recent(10)
-                cutoff = (datetime.now(IST).date() - timedelta(days=365)).isoformat()
-                with _connect() as db:
-                    db.execute("DELETE FROM daily_bars WHERE trading_date < ?", (cutoff,))
+                # Keep the five-year history; only recent dates are refreshed daily.
     thread = threading.Thread(target=worker, name="pipsgox-sqlite-eod-sync", daemon=True)
     thread.start()
 
@@ -561,7 +560,7 @@ if __name__ == "__main__":
     import json
 
     parser = argparse.ArgumentParser(description="Seed or refresh the local SQLite NSE EOD database.")
-    parser.add_argument("--backfill-days", type=int, default=365, help="Calendar days to backfill (default: 365).")
+    parser.add_argument("--backfill-days", type=int, default=HISTORY_DAYS, help="Calendar days to backfill (default: five years).")
     parser.add_argument("--recent-only", action="store_true", help="Only refresh the latest ten calendar days.")
     parser.add_argument("--status", action="store_true", help="Print local database coverage and exit.")
     args = parser.parse_args()
@@ -573,4 +572,5 @@ if __name__ == "__main__":
     else:
         print(json.dumps(sync_recent(10), indent=2))
         print(json.dumps(backfill(args.backfill_days), indent=2))
+        print(json.dumps(backfill_indices(args.backfill_days), indent=2))
     print(json.dumps(sync_status(), indent=2))

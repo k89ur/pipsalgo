@@ -422,7 +422,9 @@ def start_background_sync() -> None:
     def worker():
         initialize()
         sync_recent(10)
+        sync_indices_recent(10)
         backfill(365)
+        backfill_indices(365)
         while True:
             now = datetime.now(IST)
             target = now.replace(hour=16, minute=10, second=0, microsecond=0)
@@ -432,6 +434,7 @@ def start_background_sync() -> None:
             # Run after the cash market close; skip weekend days.
             if datetime.now(IST).weekday() < 5:
                 sync_recent(10)
+                sync_indices_recent(10)
                 cutoff = (datetime.now(IST).date() - timedelta(days=365)).isoformat()
                 with _connect() as db:
                     db.execute("DELETE FROM daily_bars WHERE trading_date < ?", (cutoff,))
@@ -446,7 +449,6 @@ class SQLiteMarketDataProvider:
         if timeframe not in {"D", "W", "M"}:
             raise ValueError("Local SQLite database contains daily EOD candles only. Intraday timeframes require intraday data.")
         clean = _clean_symbol(symbol)
-        initialize()
         params: list = [clean]
         query = "SELECT trading_date,open,high,low,close,volume FROM daily_bars WHERE symbol=?"
         if start is not None:
@@ -548,7 +550,10 @@ def sync_status() -> dict:
         last = db.execute("SELECT MAX(trading_date) FROM daily_bars").fetchone()[0]
         state = {row["key"]: row["value"] for row in db.execute("SELECT key,value FROM sync_state")}
         errors = [dict(row) for row in db.execute("SELECT trading_date,detail FROM sync_dates WHERE status='error' ORDER BY trading_date DESC LIMIT 5")]
-    return {"database": str(_db_path()), "bars": count, "symbols": symbols, "first_date": first, "last_date": last, **state, "recent_errors": errors}
+        index_count = db.execute("SELECT COUNT(*) FROM daily_bars WHERE symbol IN ('NIFTY','BANKNIFTY','FINNIFTY','NIFTYNXT50','MIDCPNIFTY','NIFTYMIDCAP50','NIFTYIT','NIFTYAUTO','NIFTYPHARMA','NIFTYFMCG','NIFTYMETAL','NIFTYREALTY','NIFTYENERGY','NIFTYPSUBANK','NIFTYPRIVATEBANK')").fetchone()[0]
+        index_symbols = db.execute("SELECT COUNT(DISTINCT symbol) FROM daily_bars WHERE symbol IN ('NIFTY','BANKNIFTY','FINNIFTY','NIFTYNXT50','MIDCPNIFTY','NIFTYMIDCAP50','NIFTYIT','NIFTYAUTO','NIFTYPHARMA','NIFTYFMCG','NIFTYMETAL','NIFTYREALTY','NIFTYENERGY','NIFTYPSUBANK','NIFTYPRIVATEBANK')").fetchone()[0]
+        index_errors = [dict(row) for row in db.execute("SELECT trading_date,detail FROM index_sync_dates WHERE status='error' ORDER BY trading_date DESC LIMIT 5")]
+    return {"database": str(_db_path()), "bars": count, "symbols": symbols, "first_date": first, "last_date": last, "index_bars": index_count, "index_symbols": index_symbols, "index_recent_errors": index_errors, **state, "recent_errors": errors}
 
 
 if __name__ == "__main__":

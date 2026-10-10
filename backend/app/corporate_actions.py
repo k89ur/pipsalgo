@@ -206,3 +206,175 @@ def action_status(db: sqlite3.Connection) -> dict[str, Any]:
         "automatic_nse_refresh": "not_yet_implemented",
         "upcoming_events": upcoming,
     }
+
+
+# NSE's official corporate-action feed. The date window is deliberately chunked
+# to avoid asking the endpoint for an unbounded response.
+NSE_HOME = "https://www.nseindia.com/"
+NSE_ACTIONS_URL = "https://www.nseindia.com/api/corporates-corporateActions"
+NSE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                  "Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": NSE_HOME,
+}
+
+
+def _parse_nse_date(value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if not raw or raw in {"-", "NA", "null"}:
+        return None
+    for fmt in ("%d-%b-%Y", "%d-%B-%Y", "%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def _classify_subject(subject: str) -> tuple[str, float | None, float | None, float | None]:
+    """Classify action text and derive only unambiguous share-structure factors."""
+    import re
+
+    text = " ".join((subject or "").strip().lower().split())
+    if "bonus" in text:
+        match = re.search(r"bonus\s*(?:issue\s*)?(\d+)\s*[:/ ]\s*(\d+)", text)
+        if match:
+            new_shares, existing_shares = int(match.group(1)), int(match.group(2))
+            if new_shares > 0 and existing_shares > 0:
+                multiplier = (new_shares + existing_shares) / existing_shares
+                return "bonus", 1.0 / multiplier, multiplier, None
+        return "bonus", None, None, None
+
+    if "split" in text or "sub-division" in text or "subdivision" in text:
+        # NSE purpose commonly states old face value -> new face value.
+        match = re.search(
+            r"(?:from\s*)?(?:rs\.?\s*)?(\d+(?:\.\d+)?)\s*"
+            r"(?:/-\s*)?(?:per\s*share\s*)?(?:to|into|subdivided\s*to)\s*"
+            r"(?:rs\.?\s*)?(\d+(?:\.\d+)?)",
+            text,
+        )
+        if match:
+            old_face, new_face = float(match.group(1)), float(match.group(2))
+            if old_face > 0 and new_face > 0:
+                multiplier = old_face / new_face
+                return ("split" if multiplier >= 1 else "consolidation",
+                        1.0 / multiplier, multiplier, None)
+        return "split", None, None, None
+
+    if "consolidat" in text:
+        return "consolidation", None, None, None
+    if "dividend" in text:
+        match = re.search(r"(?:rs\.?|re\.?|₹)\s*(\d+(?:\.\d+)?)", text)
+        return "dividend", None, None, float(match.group(1)) if match else None
+    if "right" in text:
+        return "rights", None, None, None
+    if "demerger" in text:
+        return "demerger", None, None, None
+    if "merger" in text or "amalgamation" in text:
+        return "merger", None, None, None
+    return "other", None, None, None
+
+
+def _nse_session():
+    import requests
+    session = requests.Session()
+    session.headers.update(NSE_HEADERS)
+    # Warm cookies from the official site before calling its JSON endpoint.
+    response = session.get(NSE_HOME, timeout=20)
+    response.raise_for_status()
+    return session
+
+
+def refresh_nse_corporate_actions(
+    db: sqlite3.Connection,
+    *,
+    start_date: date,
+    end_date: date,
+    session=None,
+) -> dict[str, Any]:
+    """Import official NSE equity actions in bounded windows.
+
+    Events with clearly parsed bonus/split ratios are marked verified only
+    after coming from the official NSE feed. Other event terms remain pending
+    for event-specific review and cannot alter adjusted candles.
+    """
+    import json
+    import requests
+    from datetime import timedelta
+
+    own_session = session is None
+    session = session or _nse_session()
+    result: dict[str, Any] = {
+        "source": NSE_ACTIONS_URL,
+        "from_date": start_date.isoformat(),
+        "to_date": end_date.isoformat(),
+        "windows_checked": 0,
+        "rows_received": 0,
+        "events_written": 0,
+        "errors": [],
+    }
+    cursor = start_date
+    try:
+        while cursor <= end_date:
+            chunk_end = min(cursor + timedelta(days=89), end_date)
+            params = {
+                "index": "equities",
+                "from_date": cursor.strftime("%d-%m-%Y"),
+                "to_date": chunk_end.strftime("%d-%m-%Y"),
+            }
+            try:
+                response = session.get(NSE_ACTIONS_URL, params=params, timeout=30)
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, list):
+                    raise ValueError("NSE corporate-action feed did not return a JSON list")
+                result["windows_checked"] += 1
+                result["rows_received"] += len(payload)
+                for row in payload:
+                    if not isinstance(row, dict):
+                        continue
+                    symbol = str(row.get("symbol") or "").strip().upper()
+                    series = str(row.get("series") or "EQ").strip().upper()
+                    if not symbol or series not in {"EQ", "BE"}:
+                        continue
+                    subject = str(row.get("subject") or row.get("purpose") or "").strip()
+                    ex_date = _parse_nse_date(row.get("exDate") or row.get("ex_date"))
+                    if not ex_date:
+                        continue
+                    action_type, price_factor, volume_factor, dividend_amount = _classify_subject(subject)
+                    is_factorized = action_type in SUPPORTED_PRICE_FACTOR_TYPES and price_factor is not None
+                    is_past = date.fromisoformat(ex_date) < date.today()
+                    status = "verified" if is_factorized else "pending"
+                    adjustment_status = "applied" if is_factorized and is_past else "not_applied"
+                    record_action(db, {
+                        "symbol": symbol,
+                        "action_type": action_type,
+                        "announcement_date": _parse_nse_date(row.get("broadcastDate") or row.get("announcementDate")),
+                        "ex_date": ex_date,
+                        "record_date": _parse_nse_date(row.get("recDate") or row.get("recordDate")),
+                        "purpose": subject,
+                        "ratio_text": subject if action_type in {"bonus", "split", "consolidation"} else "",
+                        "price_factor": price_factor,
+                        "volume_factor": volume_factor,
+                        "dividend_amount": dividend_amount,
+                        "source_url": NSE_ACTIONS_URL,
+                        "source_name": "NSE official corporate actions API",
+                        "verification_status": status,
+                        "adjustment_status": adjustment_status,
+                        "notes": "" if is_factorized else "Official NSE event imported; terms/factor require event-specific review.",
+                        "source_payload": json.dumps(row, ensure_ascii=False, sort_keys=True),
+                    })
+                    result["events_written"] += 1
+                db.commit()
+            except (requests.RequestException, ValueError, TypeError) as exc:
+                result["errors"].append(
+                    f"{cursor.isoformat()}..{chunk_end.isoformat()}: {type(exc).__name__}: {exc}"
+                )
+            cursor = chunk_end + timedelta(days=1)
+    finally:
+        if own_session:
+            session.close()
+    result["status"] = "ok" if not result["errors"] else ("partial" if result["events_written"] else "error")
+    return result

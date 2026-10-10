@@ -148,10 +148,12 @@ def _fetch_date(session: requests.Session, trading_date: date) -> list[tuple]:
     return _parse_bhavcopy(response.content, trading_date)
 
 
-def _already_processed(day: date) -> bool:
+def _already_processed(day: date, *, retry_empty: bool = False) -> bool:
     with _connect() as db:
         row = db.execute("SELECT status FROM sync_dates WHERE trading_date=?", (day.isoformat(),)).fetchone()
-        return bool(row and row["status"] in {"ok", "empty"})
+        if not row:
+            return False
+        return row["status"] == "ok" or (row["status"] == "empty" and not retry_empty)
 
 
 def sync_day(day: date, session: requests.Session | None = None) -> int:
@@ -203,7 +205,7 @@ def sync_recent(days: int = 10) -> dict:
         today = datetime.now(IST).date()
         for offset in range(days - 1, -1, -1):
             day = today - timedelta(days=offset)
-            if day.weekday() >= 5 or _already_processed(day):
+            if day.weekday() >= 5 or _already_processed(day, retry_empty=True):
                 continue
             results["dates_checked"] += 1
             try:

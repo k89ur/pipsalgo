@@ -22,6 +22,7 @@ from app.providers.base import Candle, Quote
 
 IST = timezone(timedelta(hours=5, minutes=30))
 BASE_URL = "https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{date}_F_0000.csv.zip"
+INDEX_BASE_URL = "https://archives.nseindia.com/content/indices/ind_close_all_{date}.csv"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/153 Safari/537.36",
     "Accept": "application/zip,text/csv,*/*",
@@ -42,13 +43,14 @@ def _db_path() -> Path:
 def _connect() -> sqlite3.Connection:
     connection = sqlite3.connect(str(_db_path()), timeout=30)
     connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA journal_mode=WAL")
+    # WAL is enabled once in initialize(); do not renegotiate it per request.
     connection.execute("PRAGMA busy_timeout=30000")
     return connection
 
 
 def initialize() -> None:
     with _connect() as db:
+        db.execute("PRAGMA journal_mode=WAL")
         db.executescript("""
         CREATE TABLE IF NOT EXISTS daily_bars (
             symbol TEXT NOT NULL,
@@ -72,6 +74,13 @@ def initialize() -> None:
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS index_sync_dates (
+            trading_date TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            rows_written INTEGER NOT NULL DEFAULT 0,
+            detail TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
         """)
 
 
@@ -86,7 +95,15 @@ def _clean_symbol(value: str) -> str:
         symbol = symbol[:-3]
     if symbol.endswith(".BO"):
         symbol = symbol[:-3]
-    return symbol
+    compact = "".join(ch for ch in symbol if ch.isalnum())
+    aliases = {
+        "NIFTY": "NIFTY", "NIFTY50": "NIFTY",
+        "NIFTYBANK": "BANKNIFTY", "BANKNIFTY": "BANKNIFTY",
+        "NIFTYFINANCIALSERVICES": "FINNIFTY", "FINNIFTY": "FINNIFTY",
+        "NIFTYNEXT50": "NIFTYNXT50", "NIFTYNXT50": "NIFTYNXT50",
+        "NIFTYMIDCAPSELECT": "MIDCPNIFTY", "MIDCPNIFTY": "MIDCPNIFTY",
+    }
+    return aliases.get(compact, symbol)
 
 
 def _number(row: dict, *keys: str, integer: bool = False):

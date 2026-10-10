@@ -8,13 +8,14 @@ Other event types remain recorded but unapplied until their event-specific
 adjustment methodology has been verified.
 """
 import sqlite3
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from app.providers.base import Candle
 
 
 SUPPORTED_PRICE_FACTOR_TYPES = {"split", "bonus", "consolidation"}
+IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def initialize_corporate_actions(db: sqlite3.Connection) -> None:
@@ -134,8 +135,8 @@ def adjust_candles(db: sqlite3.Connection, symbol: str, candles: list[Candle],
     clean = symbol.strip().upper()
     if not candles:
         return candles
-    first_day = date.fromtimestamp(candles[0].time).isoformat()
-    last_day = date.fromtimestamp(candles[-1].time).isoformat()
+    first_day = datetime.fromtimestamp(candles[0].time, IST).date().isoformat()
+    last_day = datetime.fromtimestamp(candles[-1].time, IST).date().isoformat()
     rows = db.execute("""
         SELECT ex_date, action_type, price_factor, volume_factor
         FROM corporate_actions
@@ -151,7 +152,7 @@ def adjust_candles(db: sqlite3.Connection, symbol: str, candles: list[Candle],
         return candles
     result = []
     for candle in candles:
-        candle_day = date.fromtimestamp(candle.time).isoformat()
+        candle_day = datetime.fromtimestamp(candle.time, IST).date().isoformat()
         price_factor = 1.0
         volume_factor = 1.0
         for action in actions:

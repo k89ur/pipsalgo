@@ -92,10 +92,20 @@ def validate_action(action: dict[str, Any]) -> dict[str, Any]:
             volume_factor = None
 
     normalized = dict(action)
+    # INSERT explicitly names these columns, so SQLite column defaults do not
+    # apply when callers omit optional text fields. Normalize them here to
+    # keep the ledger API safe for tests, manual imports, and future providers.
     normalized.update({
         "symbol": symbol,
         "action_type": action_type,
         "ex_date": ex_date,
+        "purpose": str(action.get("purpose") or ""),
+        "ratio_text": str(action.get("ratio_text") or ""),
+        "source_url": str(action.get("source_url") or ""),
+        "source_name": str(action.get("source_name") or "NSE"),
+        "notes": str(action.get("notes") or ""),
+        "source_payload": str(action.get("source_payload") or ""),
+        "adjustment_status": str(action.get("adjustment_status") or "not_applied"),
         "price_factor": float(price_factor) if price_factor is not None else None,
         "volume_factor": float(volume_factor) if volume_factor is not None else None,
         "verification_status": status,

@@ -181,7 +181,7 @@ def sync_day(day: date, session: requests.Session | None = None) -> int:
             """, (day.isoformat(), "ok" if rows else "empty", len(rows), "", now))
             db.execute("INSERT INTO sync_state(key,value) VALUES('last_attempt',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (now,))
             if rows:
-                db.execute("INSERT INTO sync_state(key,value) VALUES('last_data_date',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (day.isoformat(),))
+                db.execute("INSERT INTO sync_state(key,value) VALUES('last_data_date',?) ON CONFLICT(key) DO UPDATE SET value=CASE WHEN excluded.value > sync_state.value THEN excluded.value ELSE sync_state.value END", (day.isoformat(),))
         return len(rows)
     except Exception as exc:
         with _connect() as db:

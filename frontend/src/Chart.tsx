@@ -556,24 +556,32 @@ export function Chart({
       // Apply the selected bottom date-range preset after the data-loader
       // callback so the visible range is set only after data is available.
       let initialRangeApplied = false;
-      const applyInitialRange = () => {
+      const applyInitialRange = (loadedBars?: number) => {
         if (initialRangeApplied || disposed) return;
-        const dataList = chart.getDataList();
-        if (!dataList.length) return;
+        // The data-loader callback can run before KLineCharts has committed the
+        // supplied bars to getDataList(). Use the response count as a readiness
+        // signal, then measure the chart data on the next animation frame.
+        const availableBars = loadedBars ?? chart.getDataList().length;
+        if (!availableBars) return;
 
         initialRangeApplied = true;
         requestAnimationFrame(() => {
-          if (disposed) return;
+          requestAnimationFrame(() => {
+            if (disposed) return;
+            const dataList = chart.getDataList();
+            const targetVisibleBars = Math.min(
+              getRangeVisibleBars(timeframe, range, Math.max(dataList.length, availableBars)),
+              Math.max(dataList.length, availableBars),
+            );
+            const chartWidth = Math.max(container.clientWidth, 1);
+            const barSpace = Math.max(
+              1,
+              Math.min(50, (chartWidth * 0.94) / Math.max(targetVisibleBars, 1)),
+            );
 
-          const targetVisibleBars = getRangeVisibleBars(timeframe, range, dataList.length);
-          const chartWidth = Math.max(container.clientWidth, 1);
-          const barSpace = Math.max(
-            1,
-            Math.min(50, (chartWidth * 0.94) / Math.max(targetVisibleBars, 1)),
-          );
-
-          chart.setBarSpace(barSpace);
-          chart.scrollToRealTime(0);
+            chart.setBarSpace(barSpace);
+            chart.scrollToRealTime(0);
+          });
         });
       };
 
@@ -605,7 +613,7 @@ export function Chart({
                 forward: type === "backward" ? false : cached.bars.length >= pageSize,
                 backward: false,
               });
-              if (type === "init") applyInitialRange();
+              if (type === "init") applyInitialRange(cached.bars.length);
             }
             if (cacheFresh) return;
 
@@ -667,7 +675,7 @@ export function Chart({
               forward: type === "backward" ? false : bars.length >= pageSize,
               backward: false,
             });
-            if (type === "init") applyInitialRange();
+            if (type === "init") applyInitialRange(bars.length);
           } catch (error) {
             if (error instanceof DOMException && error.name === "AbortError") return;
             console.error("PIPSGOX history error:", error);

@@ -572,6 +572,37 @@ class SQLiteMarketDataProvider:
         return quotes
 
 
+
+def symbol_history_status(symbol: str) -> dict:
+    """Return per-symbol candle coverage and unusually large calendar gaps."""
+    clean = _clean_symbol(symbol)
+    initialize()
+    with _connect() as db:
+        rows = list(db.execute(
+            "SELECT trading_date FROM daily_bars WHERE symbol=? ORDER BY trading_date",
+            (clean,),
+        ))
+    dates = [date.fromisoformat(row["trading_date"]) for row in rows]
+    gaps = []
+    for previous, current in zip(dates, dates[1:]):
+        missing_calendar_days = (current - previous).days
+        # A normal Friday-to-Monday interval is 3 days. Flag gaps over 7 days.
+        if missing_calendar_days > 7:
+            gaps.append({
+                "after": previous.isoformat(),
+                "before": current.isoformat(),
+                "calendar_days": missing_calendar_days,
+            })
+    return {
+        "symbol": clean,
+        "bars": len(dates),
+        "first_date": dates[0].isoformat() if dates else None,
+        "last_date": dates[-1].isoformat() if dates else None,
+        "large_gap_count": len(gaps),
+        "largest_gaps": sorted(gaps, key=lambda item: item["calendar_days"], reverse=True)[:10],
+    }
+
+
 def sync_status() -> dict:
     initialize()
     with _connect() as db:

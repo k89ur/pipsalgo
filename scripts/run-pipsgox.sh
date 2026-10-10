@@ -10,7 +10,7 @@ if [[ -n "${CODESPACE_NAME:-}" ]]; then
   WEB_URL="https://${CODESPACE_NAME}-3001.${CODESPACE_DOMAIN}"
   API_URL="https://${CODESPACE_NAME}-8000.${CODESPACE_DOMAIN}"
 else
-  WEB_URL="http://127.0.0.1:3001"
+  WEB_URL="http://localhost:3001"
   API_URL="http://127.0.0.1:8000"
 fi
 FYERS_CALLBACK="${API_URL}/auth/broker/fyers/callback"

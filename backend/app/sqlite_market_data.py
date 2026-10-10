@@ -689,7 +689,9 @@ def symbol_history_status(symbol: str) -> dict:
 def sync_status() -> dict:
     initialize()
     with _connect() as db:
-        initialize_corporate_actions(db)\n        corporate = action_status(db)\n        count = db.execute("SELECT COUNT(*) FROM daily_bars").fetchone()[0]
+        initialize_corporate_actions(db)
+        corporate = action_status(db)
+        count = db.execute("SELECT COUNT(*) FROM daily_bars").fetchone()[0]
         symbols = db.execute("SELECT COUNT(DISTINCT symbol) FROM daily_bars").fetchone()[0]
         first = db.execute("SELECT MIN(trading_date) FROM daily_bars").fetchone()[0]
         last = db.execute("SELECT MAX(trading_date) FROM daily_bars").fetchone()[0]

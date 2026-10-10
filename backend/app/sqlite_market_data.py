@@ -374,3 +374,23 @@ def sync_status() -> dict:
         state = {row["key"]: row["value"] for row in db.execute("SELECT key,value FROM sync_state")}
         errors = [dict(row) for row in db.execute("SELECT trading_date,detail FROM sync_dates WHERE status='error' ORDER BY trading_date DESC LIMIT 5")]
     return {"database": str(_db_path()), "bars": count, "symbols": symbols, "first_date": first, "last_date": last, **state, "recent_errors": errors}
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description="Seed or refresh the local SQLite NSE EOD database.")
+    parser.add_argument("--backfill-days", type=int, default=365, help="Calendar days to backfill (default: 365).")
+    parser.add_argument("--recent-only", action="store_true", help="Only refresh the latest ten calendar days.")
+    parser.add_argument("--status", action="store_true", help="Print local database coverage and exit.")
+    args = parser.parse_args()
+    initialize()
+    if args.status:
+        print(json.dumps(sync_status(), indent=2))
+    elif args.recent_only:
+        print(json.dumps(sync_recent(10), indent=2))
+    else:
+        print(json.dumps(sync_recent(10), indent=2))
+        print(json.dumps(backfill(args.backfill_days), indent=2))
+    print(json.dumps(sync_status(), indent=2))

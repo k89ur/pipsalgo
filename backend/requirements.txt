@@ -11,6 +11,3 @@ alembic>=1.16,<2.0
 Authlib>=1.6,<2.0
 webauthn>=3.0,<4.0
 qrcode>=8.2,<9.0
-yfinance
-nsefeed
-bseindia

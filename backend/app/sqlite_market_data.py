@@ -19,7 +19,10 @@ from typing import Iterable
 import requests
 
 from app.providers.base import Candle, Quote
-from app.corporate_actions import adjust_candles, initialize_corporate_actions, action_status
+from app.corporate_actions import (
+    adjust_candles, initialize_corporate_actions, action_status,
+    refresh_nse_corporate_actions,
+)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 # Five calendar years of EOD history, including leap days.
@@ -452,6 +455,57 @@ def backfill(days: int = HISTORY_DAYS) -> dict:
     return results
 
 
+def sync_corporate_actions(*, historical: bool = False) -> dict:
+    """Refresh the official NSE action feed and persist auditable sync status."""
+    initialize()
+    today = datetime.now(IST).date()
+    start = today - timedelta(days=HISTORY_DAYS if historical else 90)
+    end = today + timedelta(days=180)
+    with _connect() as db:
+        try:
+            result = refresh_nse_corporate_actions(db, start_date=start, end_date=end)
+        except Exception as exc:
+            # An unavailable NSE endpoint must not kill the market-data sync
+            # worker; persist the failure and retry on the next scheduled run.
+            result = {
+                "status": "error",
+                "from_date": start.isoformat(),
+                "to_date": end.isoformat(),
+                "windows_checked": 0,
+                "rows_received": 0,
+                "events_written": 0,
+                "errors": [f"{type(exc).__name__}: {exc}"],
+            }
+        now = datetime.now(IST).isoformat()
+        db.execute(
+            "INSERT INTO sync_state(key,value) VALUES('corporate_actions_last_run',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (now,),
+        )
+        db.execute(
+            "INSERT INTO sync_state(key,value) VALUES('corporate_actions_last_status',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (result["status"],),
+        )
+        db.execute(
+            "INSERT INTO sync_state(key,value) VALUES('corporate_actions_last_error',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ("; ".join(result["errors"][:10]),),
+        )
+        if historical and result["status"] == "ok":
+            db.execute(
+                "INSERT INTO sync_state(key,value) VALUES('corporate_actions_historical_status','complete') "
+                "ON CONFLICT(key) DO UPDATE SET value='complete'"
+            )
+        elif historical:
+            db.execute(
+                "INSERT INTO sync_state(key,value) VALUES('corporate_actions_historical_status','partial') "
+                "ON CONFLICT(key) DO UPDATE SET value='partial'"
+            )
+        db.commit()
+    return result
+
+
 def start_background_sync() -> None:
     """Refresh recent data first, then resumably backfill five years in the background."""
     def worker():
@@ -460,6 +514,13 @@ def start_background_sync() -> None:
         sync_indices_recent(10)
         backfill(HISTORY_DAYS)
         backfill_indices(HISTORY_DAYS)
+        # Retry the historical import on subsequent starts until every bounded
+        # NSE date window succeeds; this avoids silently accepting partial coverage.
+        with _connect() as db:
+            historical_state = db.execute(
+                "SELECT value FROM sync_state WHERE key='corporate_actions_historical_status'"
+            ).fetchone()
+        sync_corporate_actions(historical=historical_state is None or historical_state["value"] != "complete")
         while True:
             now = datetime.now(IST)
             target = now.replace(hour=16, minute=10, second=0, microsecond=0)
@@ -470,6 +531,7 @@ def start_background_sync() -> None:
             if datetime.now(IST).weekday() < 5:
                 sync_recent(10)
                 sync_indices_recent(10)
+                sync_corporate_actions(historical=False)
                 # Keep the five-year history; only recent dates are refreshed daily.
     thread = threading.Thread(target=worker, name="pipsgox-sqlite-eod-sync", daemon=True)
     thread.start()

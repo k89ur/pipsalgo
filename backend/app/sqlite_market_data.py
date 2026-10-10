@@ -579,7 +579,9 @@ class SQLiteMarketDataProvider:
             open=float(row["open"]), high=float(row["high"]), low=float(row["low"]),
             close=float(row["close"]), volume=int(row["volume"] or 0)
         ) for row in rows]
-        with _connect() as db:\n            candles = adjust_candles(db, clean, candles, adjustment)\n        if timeframe in {"W", "M"}:
+        with _connect() as db:
+            candles = adjust_candles(db, clean, candles, adjustment)
+        if timeframe in {"W", "M"}:
             grouped = {}
             for candle, row in zip(candles, rows):
                 day = date.fromisoformat(row["trading_date"])

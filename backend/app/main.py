@@ -2107,7 +2107,7 @@ def history(
     limit: int = Query(default=800, ge=50, le=2000),
     from_date: date | None = Query(default=None),
     to_date: date | None = Query(default=None),
-    adjustment: Literal["raw", "split_bonus", "total_return"] = "raw",
+    adjustment: Literal["raw", "split_bonus"] = "raw",
     account_id: int | None = Query(default=None, ge=1),
 ) -> list[Candle]:
     clean_symbol = symbol.strip().upper()

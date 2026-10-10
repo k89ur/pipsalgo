@@ -7,6 +7,7 @@ events with an explicit positive price factor are applied automatically.
 Other event types remain recorded but unapplied until their event-specific
 adjustment methodology has been verified.
 """
+import math
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -71,9 +72,18 @@ def validate_action(action: dict[str, Any]) -> dict[str, Any]:
     if action_type in SUPPORTED_PRICE_FACTOR_TYPES and status == "verified":
         if price_factor is None or volume_factor is None:
             raise ValueError("Verified split/bonus/consolidation actions require explicit price and volume factors")
-        if not (0 < float(price_factor) <= 1 and float(volume_factor) >= 1):
-            raise ValueError("Price factor must be in (0, 1] and volume factor must be >= 1")
-        if abs(float(price_factor) * float(volume_factor) - 1.0) > 0.03:
+        price_factor = float(price_factor)
+        volume_factor = float(volume_factor)
+        # Reverse splits/consolidations increase per-share prices and reduce
+        # volume, so factors may be above or below 1. Only reciprocity matters.
+        if (
+            not math.isfinite(price_factor)
+            or not math.isfinite(volume_factor)
+            or price_factor <= 0
+            or volume_factor <= 0
+        ):
+            raise ValueError("Price and volume factors must be finite positive numbers")
+        if abs(price_factor * volume_factor - 1.0) > 0.03:
             raise ValueError("Price and volume factors must be approximately reciprocal")
     else:
         # Prevent unverified or unsupported event types from changing charts.
@@ -130,8 +140,13 @@ def adjust_candles(db: sqlite3.Connection, symbol: str, candles: list[Candle],
     """
     if mode == "raw":
         return candles
-    if mode not in {"split_bonus", "total_return"}:
-        raise ValueError("mode must be raw, split_bonus, or total_return")
+    if mode == "total_return":
+        raise NotImplementedError(
+            "total_return adjustment is unavailable until verified dividend "
+            "cash-flow handling is implemented; use raw or split_bonus"
+        )
+    if mode != "split_bonus":
+        raise ValueError("mode must be raw or split_bonus")
     clean = symbol.strip().upper()
     if not candles:
         return candles

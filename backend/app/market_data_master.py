@@ -186,11 +186,14 @@ class _YFinanceProvider:
             raise ValueError(f"Unsupported timeframe: {timeframe}")
 
         start, end = self._history_window(timeframe, limit, start, end)
+        # Ticker.history() does not accept the progress argument in
+        # supported yfinance versions; that option belongs to yf.download().
+        # Passing it here raises TypeError before Yahoo is queried, which
+        # makes the chart history endpoint fail even while quote downloads work.
         kwargs = {
             "interval": interval,
             "auto_adjust": False,
             "actions": False,
-            "progress": False,
             "timeout": 20,
             "raise_errors": True,
             "repair": False,

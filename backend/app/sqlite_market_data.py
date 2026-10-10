@@ -52,47 +52,64 @@ def _connect() -> sqlite3.Connection:
     return connection
 
 
+_initialized = False
+
+
 def initialize() -> None:
-    with _connect() as db:
-        db.execute("PRAGMA journal_mode=WAL")
-        db.executescript("""
-        CREATE TABLE IF NOT EXISTS daily_bars (
-            symbol TEXT NOT NULL,
-            trading_date TEXT NOT NULL,
-            open REAL NOT NULL,
-            high REAL NOT NULL,
-            low REAL NOT NULL,
-            close REAL NOT NULL,
-            volume INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (symbol, trading_date)
-        );
-        CREATE INDEX IF NOT EXISTS idx_daily_bars_date ON daily_bars(trading_date);
-        CREATE TABLE IF NOT EXISTS sync_dates (
-            trading_date TEXT PRIMARY KEY,
-            status TEXT NOT NULL,
-            rows_written INTEGER NOT NULL DEFAULT 0,
-            detail TEXT NOT NULL DEFAULT '',
-            updated_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS sync_state (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS index_sync_dates (
-            trading_date TEXT PRIMARY KEY,
-            status TEXT NOT NULL,
-            rows_written INTEGER NOT NULL DEFAULT 0,
-            detail TEXT NOT NULL DEFAULT '',
-            updated_at TEXT NOT NULL
-        );
-        """)
-        # The first five-year backfill rollout may have marked pre-UDiFF dates
-        # empty because the modern URL does not exist for legacy-format dates.
-        # Reset those empty markers exactly once so the corrected legacy URL retries them.
-        marker = db.execute("SELECT value FROM sync_state WHERE key='legacy_bhavcopy_url_v1'").fetchone()
-        if marker is None:
-            db.execute("DELETE FROM sync_dates WHERE status='empty' AND trading_date < ?", (UDIFF_CUTOVER.isoformat(),))
-            db.execute("INSERT INTO sync_state(key,value) VALUES('legacy_bhavcopy_url_v1','1')")
+    """Initialize SQLite schema once per process, not once per historical date."""
+    global _initialized
+    if _initialized:
+        return
+    with _sync_lock:
+        if _initialized:
+            return
+        with _connect() as db:
+            db.execute("PRAGMA journal_mode=WAL")
+            db.executescript("""
+            CREATE TABLE IF NOT EXISTS daily_bars (
+                symbol TEXT NOT NULL,
+                trading_date TEXT NOT NULL,
+                open REAL NOT NULL,
+                high REAL NOT NULL,
+                low REAL NOT NULL,
+                close REAL NOT NULL,
+                volume INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (symbol, trading_date)
+            );
+            CREATE INDEX IF NOT EXISTS idx_daily_bars_date ON daily_bars(trading_date);
+            CREATE TABLE IF NOT EXISTS sync_dates (
+                trading_date TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                rows_written INTEGER NOT NULL DEFAULT 0,
+                detail TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS sync_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS index_sync_dates (
+                trading_date TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                rows_written INTEGER NOT NULL DEFAULT 0,
+                detail TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            );
+            """)
+            # Reset empty markers created by the first five-year rollout, which
+            # used the modern URL for pre-UDiFF dates. Do this exactly once.
+            marker = db.execute(
+                "SELECT value FROM sync_state WHERE key='legacy_bhavcopy_url_v1'"
+            ).fetchone()
+            if marker is None:
+                db.execute(
+                    "DELETE FROM sync_dates WHERE status='empty' AND trading_date < ?",
+                    (UDIFF_CUTOVER.isoformat(),),
+                )
+                db.execute(
+                    "INSERT INTO sync_state(key,value) VALUES('legacy_bhavcopy_url_v1','1')"
+                )
+        _initialized = True
 
 
 def _clean_symbol(value: str):

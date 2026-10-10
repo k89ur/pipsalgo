@@ -24,7 +24,7 @@ NIFTY 50,25000,25100,24900,25050,0,09-10-2026
 NIFTY BANK,25000,25100,24950,24940,0,09-10-2026
 NIFTY IT,25000,24900,24800,24850,0,09-10-2026
 """
-        rows = _parse_index_csv(payload, __import__("datetime").date(2026, 10, 9))
+        rows = _parse_index_csv(payload, date(2026, 10, 9))
         self.assertEqual([row[0] for row in rows], ["NIFTY"])
 
 

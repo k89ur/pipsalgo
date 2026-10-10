@@ -165,6 +165,162 @@ def _fetch_date(session: requests.Session, trading_date: date) -> list[tuple]:
     return _parse_bhavcopy(response.content, trading_date)
 
 
+def _index_symbol(name: str) -> str:
+    normalized = " ".join((name or "").strip().upper().replace("&", " AND ").split())
+    aliases = {
+        "NIFTY 50": "NIFTY",
+        "NIFTY BANK": "BANKNIFTY",
+        "NIFTY FINANCIAL SERVICES": "FINNIFTY",
+        "NIFTY NEXT 50": "NIFTYNXT50",
+        "NIFTY MIDCAP SELECT": "MIDCPNIFTY",
+        "NIFTY MIDCAP 50": "NIFTYMIDCAP50",
+        "NIFTY IT": "NIFTYIT",
+        "NIFTY AUTO": "NIFTYAUTO",
+        "NIFTY PHARMA": "NIFTYPHARMA",
+        "NIFTY FMCG": "NIFTYFMCG",
+        "NIFTY METAL": "NIFTYMETAL",
+        "NIFTY REALTY": "NIFTYREALTY",
+        "NIFTY ENERGY": "NIFTYENERGY",
+        "NIFTY PSU BANK": "NIFTYPSUBANK",
+        "NIFTY PRIVATE BANK": "NIFTYPRIVATEBANK",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    if "FUTURES" in normalized or "STRATEGY" in normalized or "TOTAL RETURNS" in normalized:
+        return ""
+    return "".join(ch for ch in normalized if ch.isalnum())
+
+
+def _parse_index_csv(payload: bytes, requested_date: date) -> list[tuple]:
+    stream = io.TextIOWrapper(io.BytesIO(payload), encoding="utf-8-sig", newline="")
+    reader = csv.DictReader(stream)
+    parsed = []
+    for raw in reader:
+        row = {(key or "").strip(): value for key, value in raw.items()}
+        symbol = _index_symbol(row.get("Index Name", ""))
+        if not symbol:
+            continue
+        open_price = _number(row, "Open Index Value", "Open")
+        high = _number(row, "High Index Value", "High")
+        low = _number(row, "Low Index Value", "Low")
+        close = _number(row, "Closing Index Value", "Closing", "Close")
+        volume = _number(row, "Volume", integer=True)
+        if any(value is None or value <= 0 for value in (open_price, high, low, close)):
+            continue
+        raw_date = str(row.get("Index Date") or "").strip()
+        try:
+            day = datetime.strptime(raw_date, "%d-%m-%Y").date()
+        except ValueError:
+            day = requested_date
+        parsed.append((symbol, day.isoformat(), open_price, high, low, close, volume or 0))
+    unique = {}
+    for row in parsed:
+        unique.setdefault(row[0], row)
+    return list(unique.values())
+
+
+def _fetch_index_date(session: requests.Session, trading_date: date) -> list[tuple]:
+    url = INDEX_BASE_URL.format(date=trading_date.strftime("%d%m%Y"))
+    response = session.get(url, headers=HEADERS, timeout=25)
+    if response.status_code == 404:
+        return []
+    if response.status_code == 429 or response.status_code >= 500:
+        time.sleep(1.5)
+        response = session.get(url, headers=HEADERS, timeout=30)
+    if response.status_code != 200:
+        raise RuntimeError(f"NSE index archive HTTP {response.status_code} for {trading_date.isoformat()}")
+    if len(response.content) < 500:
+        raise RuntimeError(f"NSE index archive returned an unexpectedly small response for {trading_date.isoformat()}")
+    return _parse_index_csv(response.content, trading_date)
+
+
+def _index_already_processed(day: date, *, retry_empty: bool = False) -> bool:
+    with _connect() as db:
+        row = db.execute("SELECT status FROM index_sync_dates WHERE trading_date=?", (day.isoformat(),)).fetchone()
+        if not row:
+            return False
+        return row["status"] == "ok" or (row["status"] == "empty" and not retry_empty)
+
+
+def sync_index_day(day: date, session: requests.Session | None = None) -> int:
+    initialize()
+    own_session = session is None
+    session = session or requests.Session()
+    try:
+        rows = _fetch_index_date(session, day)
+        now = datetime.now(IST).isoformat()
+        with _connect() as db:
+            if rows:
+                db.executemany("""
+                    INSERT INTO daily_bars(symbol,trading_date,open,high,low,close,volume)
+                    VALUES(?,?,?,?,?,?,?)
+                    ON CONFLICT(symbol,trading_date) DO UPDATE SET
+                      open=excluded.open, high=excluded.high, low=excluded.low,
+                      close=excluded.close, volume=excluded.volume
+                """, rows)
+            db.execute("""
+                INSERT INTO index_sync_dates(trading_date,status,rows_written,detail,updated_at)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(trading_date) DO UPDATE SET status=excluded.status,
+                  rows_written=excluded.rows_written,detail=excluded.detail,updated_at=excluded.updated_at
+            """, (day.isoformat(), "ok" if rows else "empty", len(rows), "", now))
+        return len(rows)
+    except Exception as exc:
+        with _connect() as db:
+            db.execute("""
+                INSERT INTO index_sync_dates(trading_date,status,rows_written,detail,updated_at)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(trading_date) DO UPDATE SET status='error',detail=excluded.detail,updated_at=excluded.updated_at
+            """, (day.isoformat(), "error", 0, str(exc)[:500], datetime.now(IST).isoformat()))
+        raise
+    finally:
+        if own_session:
+            session.close()
+
+
+def sync_indices_recent(days: int = 10) -> dict:
+    initialize()
+    results = {"dates_checked": 0, "rows_written": 0, "errors": []}
+    session = requests.Session()
+    try:
+        today = datetime.now(IST).date()
+        for offset in range(days - 1, -1, -1):
+            day = today - timedelta(days=offset)
+            if day.weekday() >= 5 or _index_already_processed(day, retry_empty=True):
+                continue
+            results["dates_checked"] += 1
+            try:
+                results["rows_written"] += sync_index_day(day, session)
+            except Exception as exc:
+                results["errors"].append(f"{day.isoformat()}: {exc}")
+            time.sleep(0.1)
+    finally:
+        session.close()
+    return results
+
+
+def backfill_indices(days: int = 365) -> dict:
+    initialize()
+    results = {"dates_checked": 0, "rows_written": 0, "errors": []}
+    session = requests.Session()
+    today = datetime.now(IST).date()
+    start = today - timedelta(days=max(1, days) - 1)
+    try:
+        for offset in range((today - start).days + 1):
+            day = start + timedelta(days=offset)
+            if day.weekday() >= 5 or _index_already_processed(day):
+                continue
+            results["dates_checked"] += 1
+            try:
+                results["rows_written"] += sync_index_day(day, session)
+            except Exception as exc:
+                results["errors"].append(f"{day.isoformat()}: {exc}")
+            time.sleep(0.1)
+    finally:
+        session.close()
+    return results
+
+
 def _already_processed(day: date, *, retry_empty: bool = False) -> bool:
     with _connect() as db:
         row = db.execute("SELECT status FROM sync_dates WHERE trading_date=?", (day.isoformat(),)).fetchone()

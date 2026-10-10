@@ -268,10 +268,6 @@ function formatWatchVolume(value: number | null | undefined): string {
   return Math.round(value).toLocaleString("en-IN");
 }
 
-function formatWatchQuoteValue(value: number | null | undefined): string {
-  return value != null && Number.isFinite(value) && value > 0 ? value.toFixed(2) : "—";
-}
-
 function normalizeWatchItems(value: unknown): WatchItem[] {
   if (!Array.isArray(value)) return [];
 

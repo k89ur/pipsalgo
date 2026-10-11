@@ -233,7 +233,7 @@ def action_status(db: sqlite3.Connection) -> dict[str, Any]:
 
 # NSE's official corporate-action feed. The date window is deliberately chunked
 # to avoid asking the endpoint for an unbounded response.
-NSE_HOME = "https://www.nseindia.com/"
+NSE_HOME = "https://www.nseindia.com/companies-listing/corporate-filings-actions"
 NSE_ACTIONS_URL = "https://www.nseindia.com/api/corporates-corporateActions"
 NSE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -331,8 +331,10 @@ def _nse_session():
     import requests
     session = requests.Session()
     session.headers.update(NSE_HEADERS)
-    # Warm cookies from the official site before calling its JSON endpoint.
-    response = session.get(NSE_HOME, timeout=20)
+    # The homepage can return HTTP 403 while the official corporate-filings
+    # page remains accessible. Warm cookies from the page that exposes the
+    # corporate-actions data, then call the JSON endpoint with the same session.
+    response = session.get(NSE_HOME, timeout=25)
     response.raise_for_status()
     return session
 
@@ -408,7 +410,7 @@ def refresh_nse_corporate_actions(
                         record_action(db, {
                             "symbol": symbol,
                             "action_type": action_type,
-                            "announcement_date": _parse_nse_date(row.get("broadcastDate") or row.get("announcementDate")),
+                            "announcement_date": _parse_nse_date(row.get("caBroadcastDate") or row.get("broadcastDate") or row.get("announcementDate")),
                             "ex_date": ex_date,
                             "record_date": _parse_nse_date(row.get("recDate") or row.get("recordDate")),
                             "purpose": subject,

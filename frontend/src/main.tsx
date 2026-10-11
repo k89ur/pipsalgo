@@ -1684,7 +1684,7 @@ function App() {
       };
 
       const loadCurrentChartData = async (): Promise<ChartBar[]> => {
-        const response = await apiFetch("/api/history?symbol=" + encodeURIComponent(executionSymbol) + "&timeframe=" + encodeURIComponent(timeframe) + "&limit=800",
+        const response = await apiFetch("/api/history?symbol=" + encodeURIComponent(executionSymbol) + "&timeframe=" + encodeURIComponent(timeframe) + "&limit=800&adjustment=split_bonus",
           { cache: "no-store" },
         );
         if (!response.ok) throw new Error("Could not load chart data.");

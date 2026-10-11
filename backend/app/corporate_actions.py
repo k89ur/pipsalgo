@@ -315,7 +315,7 @@ def _classify_subjects(subject: str) -> list[tuple[str, float | None, float | No
         actions.append(("rights", None, None, None))
     if "demerger" in text or "hive-off" in text or "hive off" in text:
         actions.append(("demerger", None, None, None))
-    if "merger" in text or "amalgamation" in text:
+    if ("merger" in text and "demerger" not in text) or "amalgamation" in text:
         actions.append(("merger", None, None, None))
     if not actions:
         actions.append(("other", None, None, None))

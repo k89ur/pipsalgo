@@ -269,9 +269,9 @@ def _classify_subjects(subject: str) -> list[tuple[str, float | None, float | No
     if "bonus" in text:
         # Common formats include "Bonus 2:1", "Bonus Issue 1:1", and
         # "Issue of Bonus Shares in the ratio of 2:1".
-        match = re.search(r"\\bbonus\\b.{0,100}?(\\d+)\\s*[:/]\\s*(\\d+)", text)
+        match = re.search(r"\bbonus\b.{0,100}?(\d+)\s*[:/]\s*(\d+)", text)
         if not match:
-            match = re.search(r"(\\d+)\\s*[:/]\\s*(\\d+).{0,40}\\bbonus\\b", text)
+            match = re.search(r"(\d+)\s*[:/]\s*(\d+).{0,40}\bbonus\b", text)
         if match:
             new_shares, existing_shares = int(match.group(1)), int(match.group(2))
             if new_shares > 0 and existing_shares > 0:
@@ -285,10 +285,10 @@ def _classify_subjects(subject: str) -> list[tuple[str, float | None, float | No
     if "split" in text or "sub-division" in text or "subdivision" in text or "subdivided" in text:
         # Standard NSE purpose: "From Rs 10/- Per Share To Rs 2/- Per Share".
         match = re.search(
-            r"(?:from\\s*)?(?:rs\\.?\\s*|₹\\s*)?(\\d+(?:\\.\\d+)?)\\s*"
-            r"(?:/-\\s*)?(?:per\\s*share\\s*)?(?:each\\s*)?.{0,50}?"
-            r"\\b(?:to|into|subdivided\\s+to)\\b.{0,20}?"
-            r"(?:rs\\.?\\s*|₹\\s*)?(\\d+(?:\\.\\d+)?)",
+            r"(?:from\s*)?(?:rs\.?\s*|₹\s*)?(\d+(?:\.\d+)?)\s*"
+            r"(?:/-\s*)?(?:per\s*share\s*)?(?:each\s*)?.{0,50}?"
+            r"\b(?:to|into|subdivided\s+to)\b.{0,20}?"
+            r"(?:rs\.?\s*|₹\s*)?(\d+(?:\.\d+)?)",
             text,
         )
         if match:
@@ -306,7 +306,7 @@ def _classify_subjects(subject: str) -> list[tuple[str, float | None, float | No
     if "consolidat" in text and not any(item[0] in {"split", "consolidation"} for item in actions):
         actions.append(("consolidation", None, None, None))
     if "dividend" in text:
-        match = re.search(r"(?:rs\\.?|re\\.?|₹)\\s*(\\d+(?:\\.\\d+)?)", text)
+        match = re.search(r"(?:rs\.?|re\.?|₹)\s*(\d+(?:\.\d+)?)", text)
         actions.append(("dividend", None, None, float(match.group(1)) if match else None))
     if "right" in text:
         actions.append(("rights", None, None, None))

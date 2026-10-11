@@ -128,6 +128,22 @@ class CorporateActionTests(unittest.TestCase):
         self.assertEqual(adjusted[0].volume, 15000)
         self.assertEqual(adjusted[1], candles[1])
 
+    def test_applies_later_effective_action_even_when_chart_window_ends_before_ex_date(self) -> None:
+        record_action(self.db, {
+            "symbol": "TEST",
+            "action_type": "bonus",
+            "ex_date": "2026-01-05",
+            "purpose": "later bonus",
+            "verification_status": "verified",
+            "adjustment_status": "applied",
+            "price_factor": 0.5,
+            "volume_factor": 2,
+        })
+        candles = [Candle(epoch("2026-01-02"), 100, 110, 90, 105, 1000)]
+        adjusted = adjust_candles(self.db, "TEST", candles, "split_bonus")
+        self.assertEqual(adjusted[0].close, 52.5)
+        self.assertEqual(adjusted[0].volume, 2000)
+
 
 if __name__ == "__main__":
     unittest.main()

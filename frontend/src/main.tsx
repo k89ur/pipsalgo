@@ -2680,6 +2680,7 @@ json.dumps(_result)`;
               show52WeekLow={chartSettings.show52WeekLow}
               showPreviousClose={chartSettings.showPreviousClose}
               adjustment={chartSettings.adjustment}
+              showMa44={chartSettings.showMa44}
               previousClose={previousClose}
               pipscriptOutput={pipscriptOutput}
             />

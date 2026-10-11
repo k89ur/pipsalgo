@@ -27,6 +27,9 @@ function registrationOptionsForBrowser(options: Record<string, any>): PublicKeyC
   return {
     ...options,
     rp: options.rp,
+    pubKeyCredParams: Array.isArray(options.pubKeyCredParams) && options.pubKeyCredParams.length > 0
+      ? options.pubKeyCredParams
+      : [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
     challenge: base64urlToBuffer(options.challenge),
     user: {
       ...options.user,

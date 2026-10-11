@@ -2048,18 +2048,43 @@ def ma44_scanner_status(
 
 
 @app.get("/api/symbols/search", response_model=list[SymbolSearchResult])
-def search_nse_symbols(query: str, limit: int = 12) -> list[SymbolSearchResult]:
-    term = query.strip().upper()
+def search_nse_symbols(
+    q: str = Query(default="", max_length=80),
+    limit: int = Query(default=12, ge=1, le=25),
+) -> list[SymbolSearchResult]:
+    # The frontend calls this endpoint with ?q=..., so the API parameter
+    # must use the same name; a required "query" parameter causes HTTP 422.
+    term = q.strip().upper()
     if not term:
         return []
 
-    # Search the current NSE equity universe. This keeps symbol discovery
-    # independent from broker/FYERS APIs while using the same market-data
-    # boundary as the scanner.
+    # Search the union of the latest NSE bhavcopy and symbols with stored
+    # EOD history. A listing can be absent from today's bhavcopy (suspension,
+    # delisting, special series, or no trade) while its historical candles
+    # must remain searchable. This path never depends on broker/FYERS APIs.
     from app.nse_bhavcopy import fetch_latest
+    from app.sqlite_market_data import _connect
 
-    _, rows = fetch_latest()
-    matches = sorted(symbol for symbol in rows if term in symbol.upper())
+    symbols: set[str] = set()
+    try:
+        _, latest_rows = fetch_latest()
+        symbols.update(str(symbol).strip().upper() for symbol in latest_rows if symbol)
+    except (ValueError, requests.RequestException):
+        # Historical database search should still work if the latest
+        # bhavcopy cannot be downloaded.
+        logger.warning("Latest NSE bhavcopy unavailable during symbol search", exc_info=True)
+
+    db = _connect()
+    try:
+        symbols.update(
+            str(row["symbol"]).strip().upper()
+            for row in db.execute("SELECT DISTINCT symbol FROM daily_bars").fetchall()
+            if row["symbol"]
+        )
+    finally:
+        db.close()
+
+    matches = [symbol for symbol in symbols if term in symbol]
     matches.sort(key=lambda symbol: (0 if symbol == term else 1 if symbol.startswith(term) else 2, symbol))
     return [
         SymbolSearchResult(
@@ -2071,15 +2096,6 @@ def search_nse_symbols(query: str, limit: int = 12) -> list[SymbolSearchResult]:
         for symbol in matches[:limit]
     ]
 
-
-def symbol_search(
-    q: str = Query(default="", max_length=80),
-    limit: int = Query(default=12, ge=1, le=25),
-) -> list[SymbolSearchResult]:
-    try:
-        return search_nse_symbols(q, limit)
-    except ValueError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def _aggregate_daily_candles(candles: list[Candle], period: str) -> list[Candle]:
@@ -2144,7 +2160,7 @@ def history(
     limit: int = Query(default=800, ge=50, le=2000),
     from_date: date | None = Query(default=None),
     to_date: date | None = Query(default=None),
-    adjustment: Literal["raw", "split_bonus"] = "raw",
+    adjustment: Literal["raw", "split_bonus"] = "split_bonus",
     account_id: int | None = Query(default=None, ge=1),
 ) -> list[Candle]:
     clean_symbol = symbol.strip().upper()

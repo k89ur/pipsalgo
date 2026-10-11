@@ -194,6 +194,7 @@ class MA44Scanner:
             HISTORY_LIMIT,
             start=None,
             end=date.today(),
+            adjustment="split_bonus",
         )
         if not include_last_day:
             today = _now().date()

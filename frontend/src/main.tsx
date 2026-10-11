@@ -183,6 +183,7 @@ function normalizePipscriptOutput(raw: unknown, preferredType: PipscriptOutputTy
 }
 
 type ChartSettings = {
+  adjustment: "raw" | "split_bonus";
   theme: ChartTheme;
   colors: ChartColors;
   showGrid: boolean;
@@ -209,6 +210,7 @@ const CHART_COLOR_PRESETS: Record<ChartTheme, ChartColors> = {
 };
 
 const DEFAULT_CHART_SETTINGS: ChartSettings = {
+  adjustment: "split_bonus",
   theme: "pipsgox",
   colors: DEFAULT_CHART_COLORS,
   showGrid: true,
@@ -1684,7 +1686,7 @@ function App() {
       };
 
       const loadCurrentChartData = async (): Promise<ChartBar[]> => {
-        const response = await apiFetch("/api/history?symbol=" + encodeURIComponent(executionSymbol) + "&timeframe=" + encodeURIComponent(timeframe) + "&limit=800",
+        const response = await apiFetch("/api/history?symbol=" + encodeURIComponent(executionSymbol) + "&timeframe=" + encodeURIComponent(timeframe) + "&limit=800&adjustment=" + encodeURIComponent(chartSettings.adjustment),
           { cache: "no-store" },
         );
         if (!response.ok) throw new Error("Could not load chart data.");
@@ -2677,6 +2679,8 @@ json.dumps(_result)`;
               show52WeekHigh={chartSettings.show52WeekHigh}
               show52WeekLow={chartSettings.show52WeekLow}
               showPreviousClose={chartSettings.showPreviousClose}
+              adjustment={chartSettings.adjustment}
+              showMa44={chartSettings.showMa44}
               previousClose={previousClose}
               pipscriptOutput={pipscriptOutput}
             />
@@ -3189,6 +3193,18 @@ json.dumps(_result)`;
             {panel === "indicators" ? (
               <div className="indicator-panel">
                 <p>Select technical studies and optional overlays for the active chart.</p>
+
+                <label className="settings-field">
+                  <span>Price history</span>
+                  <select
+                    value={chartSettings.adjustment}
+                    onChange={(event) => updateChartSettings({ adjustment: event.target.value as "raw" | "split_bonus" })}
+                    aria-label="Price history adjustment"
+                  >
+                    <option value="split_bonus">Split &amp; bonus adjusted</option>
+                    <option value="raw">Raw NSE prices</option>
+                  </select>
+                </label>
 
                 <div className="indicator-section-title">CORE CHART INDICATORS</div>
                 <label className="indicator-toggle-row">

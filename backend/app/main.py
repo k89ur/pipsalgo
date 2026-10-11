@@ -2049,10 +2049,12 @@ def ma44_scanner_status(
 
 @app.get("/api/symbols/search", response_model=list[SymbolSearchResult])
 def search_nse_symbols(
-    query: str = Query(default="", max_length=80),
+    q: str = Query(default="", max_length=80),
     limit: int = Query(default=12, ge=1, le=25),
 ) -> list[SymbolSearchResult]:
-    term = query.strip().upper()
+    # The frontend calls this endpoint with ?q=..., so the API parameter
+    # must use the same name; a required "query" parameter causes HTTP 422.
+    term = q.strip().upper()
     if not term:
         return []
 
@@ -2094,15 +2096,6 @@ def search_nse_symbols(
         for symbol in matches[:limit]
     ]
 
-
-def symbol_search(
-    q: str = Query(default="", max_length=80),
-    limit: int = Query(default=12, ge=1, le=25),
-) -> list[SymbolSearchResult]:
-    try:
-        return search_nse_symbols(q, limit)
-    except ValueError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def _aggregate_daily_candles(candles: list[Candle], period: str) -> list[Candle]:

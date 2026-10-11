@@ -259,4 +259,4 @@ def send_totp_disable_confirmation_email(*, email: str, token: str) -> None:
         text_body=text_body,
         html_body=html_body,
     )
-\n
+

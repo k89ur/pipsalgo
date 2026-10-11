@@ -407,7 +407,6 @@ export function Chart({
   chartTheme,
   chartColors,
   adjustment,
-  accountId,
   showGrid,
   showCrosshair,
   showVolume,

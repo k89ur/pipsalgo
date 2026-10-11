@@ -557,7 +557,7 @@ def start_background_sync() -> None:
 class SQLiteMarketDataProvider:
     name = "sqlite"
 
-    def get_history(self, symbol: str, timeframe: str, limit: int, *, start=None, end=None, adjustment: str = "raw") -> list[Candle]:
+    def get_history(self, symbol: str, timeframe: str, limit: int, *, start=None, end=None, adjustment: str = "split_bonus") -> list[Candle]:
         if timeframe not in {"D", "W", "M"}:
             raise ValueError("Local SQLite database contains daily EOD candles only. Intraday timeframes require intraday data.")
         clean = _clean_symbol(symbol)
@@ -634,24 +634,43 @@ class SQLiteMarketDataProvider:
                     FROM daily_bars WHERE symbol IN ({placeholders})
                 ) WHERE rn <= 2 ORDER BY symbol,trading_date
             """, cleaned))
-        grouped = {}
-        for row in rows:
-            grouped.setdefault(row["symbol"], []).append(row)
-        quotes = []
-        for symbol in cleaned:
-            data = grouped.get(symbol, [])
-            if not data:
-                continue
-            previous = data[-2] if len(data) > 1 else data[-1]
-            last = data[-1]
-            change = float(last["close"]) - float(previous["close"])
-            prev_close = float(previous["close"])
-            quotes.append(Quote(
-                symbol=symbol, exchange="NSE", last=float(last["close"]), change=change,
-                change_percent=(change / prev_close * 100.0) if prev_close else 0.0,
-                open=float(last["open"]), high=float(last["high"]), low=float(last["low"]),
-                volume=int(last["volume"] or 0)
-            ))
+            grouped = {}
+            for row in rows:
+                grouped.setdefault(row["symbol"], []).append(row)
+
+            quotes = []
+            for symbol in cleaned:
+                data = grouped.get(symbol, [])
+                if not data:
+                    continue
+                raw_candles = [
+                    Candle(
+                        time=int(datetime.combine(
+                            date.fromisoformat(row["trading_date"]),
+                            datetime.min.time(),
+                            tzinfo=IST,
+                        ).timestamp()),
+                        open=float(row["open"]),
+                        high=float(row["high"]),
+                        low=float(row["low"]),
+                        close=float(row["close"]),
+                        volume=int(row["volume"] or 0),
+                    )
+                    for row in data
+                ]
+                # The current candle remains at its actual traded price; if the
+                # latest session is an ex-date, adjust the previous close so the
+                # watchlist daily change is not distorted by a split/bonus.
+                candles = adjust_candles(db, symbol, raw_candles, "split_bonus")
+                previous = candles[-2] if len(candles) > 1 else candles[-1]
+                last = candles[-1]
+                change = last.close - previous.close
+                prev_close = previous.close
+                quotes.append(Quote(
+                    symbol=symbol, exchange="NSE", last=last.close, change=change,
+                    change_percent=(change / prev_close * 100.0) if prev_close else 0.0,
+                    open=last.open, high=last.high, low=last.low, volume=last.volume
+                ))
         return quotes
 
 

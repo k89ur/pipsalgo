@@ -161,7 +161,10 @@ def adjust_candles(db: sqlite3.Connection, symbol: str, candles: list[Candle],
     if not candles:
         return candles
     first_day = datetime.fromtimestamp(candles[0].time, IST).date().isoformat()
-    last_day = datetime.fromtimestamp(candles[-1].time, IST).date().isoformat()
+    # Adjust past candles for every already-effective action, even when the
+    # requested chart window ends before the ex-date. Otherwise older date-range
+    # charts/backtests disagree with the same history viewed through today.
+    as_of_day = datetime.now(IST).date().isoformat()
     rows = db.execute("""
         SELECT ex_date, action_type, price_factor, volume_factor
         FROM corporate_actions
@@ -169,7 +172,7 @@ def adjust_candles(db: sqlite3.Connection, symbol: str, candles: list[Candle],
           AND adjustment_status='applied'
           AND ex_date > ? AND ex_date <= ?
         ORDER BY ex_date
-    """, (clean, first_day, last_day)).fetchall()
+    """, (clean, first_day, as_of_day)).fetchall()
     actions = [dict(row) for row in rows
                if row["action_type"] in SUPPORTED_PRICE_FACTOR_TYPES
                and row["price_factor"] is not None and row["volume_factor"] is not None]

@@ -235,15 +235,9 @@ def send_totp_disable_confirmation_email(*, email: str, token: str) -> None:
     safe_link = html.escape(link, quote=True)
 
     text_body = (
-        "A request was made to disable the PIPSGOX authenticator app.
-
-"
-        f"Confirm the request by opening this link:
-{link}
-
-"
-        "This confirmation expires in 15 minutes and can only be used once.
-"
+        "A request was made to disable the PIPSGOX authenticator app.\n\n"
+        f"Confirm the request by opening this link:\n{link}\n\n"
+        "This confirmation expires in 15 minutes and can only be used once.\n"
         "If you did not request this, ignore this email and keep your authenticator enabled."
     )
     html_body = (

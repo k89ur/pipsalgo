@@ -114,6 +114,28 @@ function normalizePipscriptOutput(raw: unknown, preferredType: PipscriptOutputTy
   if (!raw || typeof raw !== "object") throw new Error("Script must return an object.");
 
   const value = raw as Record<string, unknown>;
+  if (value.type === "boss-candle") {
+    const candle = {
+      type: "boss-candle" as const,
+      name: String(value.name || "BOSS CANDLE"),
+      time: Number(value.time),
+      open: Number(value.open),
+      high: Number(value.high),
+      low: Number(value.low),
+      close: Number(value.close),
+      color: String(value.color || "#12d98b"),
+      opacity: value.opacity == null ? 0.5 : Number(value.opacity),
+    };
+    if (![candle.time, candle.open, candle.high, candle.low, candle.close, candle.opacity].every(Number.isFinite)) {
+      throw new Error("Boss candle needs finite time, open, high, low, and close values.");
+    }
+    if (candle.high < Math.max(candle.open, candle.close) || candle.low > Math.min(candle.open, candle.close)) {
+      throw new Error("Boss candle high/low must contain its open and close.");
+    }
+    candle.opacity = Math.max(0, Math.min(1, candle.opacity));
+    return candle;
+  }
+
   const outputType = value.type === "table" || value.type === "line" ? value.type : preferredType === "table" ? "table" : "line";
 
   if (outputType === "table") {
@@ -1668,7 +1690,9 @@ function App() {
       setPipscriptStatus(
         cached.output.type === "table"
           ? `Table ready · ${cached.output.rows.length} rows · refreshing`
-          : `Indicator ready · ${cached.output.points.length} points · refreshing`,
+          : cached.output.type === "boss-candle"
+            ? `Boss Candle ready · refreshing`
+            : `Indicator ready · ${cached.output.points.length} points · refreshing`,
       );
     }
 
@@ -1811,7 +1835,9 @@ json.dumps(_result)`;
       setPipscriptStatus(
         normalized.type === "table"
           ? `Table ready · ${normalized.rows.length} rows`
-          : `Indicator ready · ${normalized.points.length} points`,
+          : normalized.type === "boss-candle"
+            ? `Boss Candle ready`
+            : `Indicator ready · ${normalized.points.length} points`,
       );
     } catch (error) {
       // A stale request must never erase a newer symbol's result.

@@ -31,6 +31,32 @@ export type ChartColors = {
 
 export type PipscriptOutput =
   | {
+      type: "boss-candle";
+      name: string;
+      time: number;
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+      color?: string;
+      opacity?: number;
+    }
+  | {
+      type: "line";
+      name: string;
+      points: Array<{ time: number; value: number }>;
+    }
+  | {
+      type: "table";
+      title: string;
+      columns: string[];
+      rows: string[][];
+      lines?: Array<{
+        name: string;
+        points: Array<{ time: number; value: number }>;
+      }>;
+    };
+  | {
       type: "line";
       name: string;
       points: Array<{ time: number; value: number }>;
@@ -88,6 +114,33 @@ const historyInflight = new Map<string, Promise<KLineData[]>>();
 const PIPSGOX_VOLUME_BARS = "PIPSGOX_VOLUME_BARS";
 const PIPSGOX_PIPSCRIPT_EMA = "PIPSGOX_PIPSCRIPT_EMA";
 const PIPSGOX_DRAWING_GROUP = "pipsgox-drawings";
+
+registerOverlay({
+  name: "pipsgoxBossCandle",
+  totalStep: 4,
+  needDefaultPointFigure: false,
+  needDefaultXAxisFigure: true,
+  needDefaultYAxisFigure: true,
+  createPointFigures: ({ coordinates, overlay }: any) => {
+    if (coordinates.length < 4) return [];
+    const [openPoint, highPoint, lowPoint, closePoint] = coordinates;
+    const x = openPoint.x;
+    const halfWidth = 5;
+    const top = Math.min(openPoint.y, closePoint.y);
+    const bottom = Math.max(openPoint.y, closePoint.y);
+    const bodyTop = Math.min(top, bottom - 1);
+    const bodyBottom = Math.max(bottom, top + 1);
+    const color = String(overlay?.styles?.color || "#12d98b");
+    const opacity = Math.max(0, Math.min(1, Number(overlay?.styles?.opacity ?? 0.5)));
+    const fill = color.startsWith("#") && color.length === 7
+      ? "rgba(" + parseInt(color.slice(1, 3), 16) + "," + parseInt(color.slice(3, 5), 16) + "," + parseInt(color.slice(5, 7), 16) + "," + opacity + ")"
+      : "rgba(18,217,139," + opacity + ")";
+    return [
+      { key: "boss-wick", type: "line", attrs: { coordinates: [{ x, y: highPoint.y }, { x, y: lowPoint.y }] }, styles: { color: fill, size: 1 } },
+      { key: "boss-body", type: "polygon", attrs: { coordinates: [{ x: x-halfWidth, y: bodyTop }, { x: x+halfWidth, y: bodyTop }, { x: x+halfWidth, y: bodyBottom }, { x: x-halfWidth, y: bodyBottom }] }, styles: { style: "stroke_fill", color: fill, size: 1, backgroundColor: fill } },
+    ];
+  },
+});
 
 registerOverlay({
   name: "pipsgoxRectangle",
@@ -1001,6 +1054,28 @@ export function Chart({
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || !pipscriptOutput) return;
+
+    if (pipscriptOutput.type === "boss-candle") {
+      const candle = pipscriptOutput;
+      const timestamp = Number(candle.time) * 1000;
+      if (![timestamp, candle.open, candle.high, candle.low, candle.close].every(Number.isFinite)) return;
+      const overlayId = chart.createOverlay({
+        name: "pipsgoxBossCandle",
+        id: "pipsgox-boss-candle",
+        paneId: "candle_pane",
+        lock: true,
+        points: [
+          { timestamp, value: Number(candle.open) },
+          { timestamp, value: Number(candle.high) },
+          { timestamp, value: Number(candle.low) },
+          { timestamp, value: Number(candle.close) },
+        ],
+        styles: { color: candle.color || "#12d98b", opacity: candle.opacity ?? 0.5 },
+      } as any);
+      return () => {
+        try { chart.removeOverlay({ id: typeof overlayId === "string" ? overlayId : "pipsgox-boss-candle" } as any); } catch { /* chart may be disposed */ }
+      };
+    }
 
     const lines = pipscriptOutput.type === "line"
       ? [{

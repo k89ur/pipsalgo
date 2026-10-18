@@ -260,16 +260,10 @@ if ! start_frontend; then
 fi
 
 echo
-echo "FINAL STATUS"
-echo "============"
-echo "STATUS: PASS — Backend process and Frontend process started"
-echo
-echo "HEALTH CHECK"
-echo "============"
+echo "RUNTIME STATUS"
+echo "=============="
 HEALTH="$(curl -fsS --max-time 3 http://127.0.0.1:8000/health || true)"
 if [[ -n "$HEALTH" ]]; then
-  echo "STATUS: PASS — Backend health"
-  echo "$HEALTH"
   python - "$HEALTH" <<'PY'
 import json
 import sys
@@ -277,31 +271,36 @@ import sys
 try:
     health = json.loads(sys.argv[1])
 except Exception:
-    print("STATUS: WARN — Health response could not be parsed.")
-    raise SystemExit(0)
+    print("STATUS: FAIL — Backend returned an unreadable health response.")
+    raise SystemExit(1)
 
-print(f"STATUS: {'PASS' if health.get('server') == 'running' else 'WARN'} — Server: {health.get('server', 'unknown')}")
-print(f"STATUS: {'PASS' if health.get('user_configured') else 'INFO'} — Owner account: {'configured' if health.get('user_configured') else 'not configured'}")
-print(
-    f"STATUS: {'PASS' if health.get('broker_accounts_configured') else 'INFO'} — "
-    f"Broker accounts: {health.get('broker_account_count', 0)}"
-)
-print(
-    f"STATUS: {'PASS' if health.get('broker_connected') else 'INFO'} — "
-    f"Connected brokers: {health.get('connected_broker_count', 0)}"
-)
-print(f"STATUS: {'PASS' if health.get('ready') else 'INFO'} — System ready: {'yes' if health.get('ready') else 'no'}")
+server_ok = health.get("server") == "running"
+ready = bool(health.get("ready"))
+provider = str(health.get("data_provider") or "unknown").upper()
+owner_configured = bool(health.get("user_configured"))
+broker_accounts = int(health.get("broker_account_count") or 0)
+connected_brokers = int(health.get("connected_broker_count") or 0)
+
+print(f"STATUS: {'PASS' if server_ok else 'FAIL'} — Backend health: {health.get('server', 'unknown')}")
+print(f"STATUS: {'PASS' if health.get('app') == 'pipsgox' else 'WARN'} — Application: {health.get('app', 'unknown')}")
+print(f"STATUS: {'PASS' if provider == 'SQLITE' else 'WARN'} — Market data source: {provider} (EOD database)")
+print(f"STATUS: {'PASS' if owner_configured else 'INFO'} — Owner account: {'configured' if owner_configured else 'setup required'}")
+print(f"STATUS: INFO — Broker accounts: {broker_accounts}; connected: {connected_brokers}")
+print(f"STATUS: {'PASS' if ready else 'WARN'} — System readiness: {'ready' if ready else 'not ready'}")
+raise SystemExit(0 if server_ok and ready else 1)
 PY
+  HEALTH_RESULT=$?
+  if [[ "$HEALTH_RESULT" -ne 0 ]]; then
+    echo "STATUS: WARN — Review backend health above before using PIPSGOX."
+  fi
 else
   echo "STATUS: FAIL — Backend health unavailable"
+  echo "ACTION: Check .pipsgox/backend.log or run ./scripts/pipsgox-doctor.sh"
+  exit 1
 fi
 
-# FYERS status is account/session protected now, so the dev startup script
-# must not treat an unauthenticated 401 as "credentials not configured".
-echo "STATUS: INFO — Broker connection is checked from the PIPSGOX web UI after owner login."
-
 echo
-echo "STATUS: PASS — PIPSGOX is running and health checks completed"
-
+echo "STATUS: PASS — PIPSGOX startup checks completed"
 echo "WEB: $WEB_URL"
 echo "API: $API_URL"
+echo "INFO: Broker connection details are shown in the authenticated web app."

@@ -361,10 +361,21 @@ def backfill_indices(days: int = HISTORY_DAYS) -> dict:
     session = requests.Session()
     today = datetime.now(IST).date()
     start = today - timedelta(days=max(1, days) - 1)
+    # Avoid opening a new SQLite connection for every calendar date during a
+    # five-year backfill. This worker runs beside chart requests on Android.
+    with _connect() as db:
+        processed_dates = {
+            row["trading_date"]
+            for row in db.execute(
+                "SELECT trading_date FROM index_sync_dates "
+                "WHERE trading_date >= ? AND trading_date <= ? AND status IN ('ok','empty')",
+                (start.isoformat(), today.isoformat()),
+            )
+        }
     try:
         for offset in range((today - start).days + 1):
             day = start + timedelta(days=offset)
-            if day.weekday() >= 5 or _index_already_processed(day):
+            if day.weekday() >= 5 or day.isoformat() in processed_dates:
                 continue
             results["dates_checked"] += 1
             try:
@@ -454,10 +465,21 @@ def backfill(days: int = HISTORY_DAYS) -> dict:
     session = requests.Session()
     today = datetime.now(IST).date()
     start = today - timedelta(days=max(1, days) - 1)
+    # Read the completed-day ledger once rather than performing ~1,800
+    # connect/query/close cycles on each application startup.
+    with _connect() as db:
+        processed_dates = {
+            row["trading_date"]
+            for row in db.execute(
+                "SELECT trading_date FROM sync_dates "
+                "WHERE trading_date >= ? AND trading_date <= ? AND status IN ('ok','empty')",
+                (start.isoformat(), today.isoformat()),
+            )
+        }
     try:
         for index in range((today - start).days + 1):
             day = start + timedelta(days=index)
-            if day.weekday() >= 5 or _already_processed(day):
+            if day.weekday() >= 5 or day.isoformat() in processed_dates:
                 continue
             results["dates_checked"] += 1
             try:

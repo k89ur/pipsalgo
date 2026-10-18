@@ -573,13 +573,15 @@ class SQLiteMarketDataProvider:
         params.append(max(1, min(int(limit), 2000)))
         with _connect() as db:
             rows = list(db.execute(query, params))
-        rows.reverse()
-        candles = [Candle(
-            time=int(datetime.combine(date.fromisoformat(row["trading_date"]), datetime.min.time(), tzinfo=IST).timestamp()),
-            open=float(row["open"]), high=float(row["high"]), low=float(row["low"]),
-            close=float(row["close"]), volume=int(row["volume"] or 0)
-        ) for row in rows]
-        with _connect() as db:
+            rows.reverse()
+            candles = [Candle(
+                time=int(datetime.combine(date.fromisoformat(row["trading_date"]), datetime.min.time(), tzinfo=IST).timestamp()),
+                open=float(row["open"]), high=float(row["high"]), low=float(row["low"]),
+                close=float(row["close"]), volume=int(row["volume"] or 0)
+            ) for row in rows]
+            # Reuse the same SQLite connection for corporate-action lookup.
+            # Opening a second connection for every chart-history request adds
+            # avoidable I/O/locking overhead on low-resource devices.
             candles = adjust_candles(db, clean, candles, adjustment)
         if timeframe in {"W", "M"}:
             grouped = {}

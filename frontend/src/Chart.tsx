@@ -286,6 +286,53 @@ function historyCacheTtl(timeframe: Timeframe) {
   return timeframe === "D" || timeframe === "W" || timeframe === "M" ? 5 * 60_000 : 15_000;
 }
 
+async function loadHistoryBars(url: string, timeframe: Timeframe): Promise<KLineData[]> {
+  const cacheKey = url;
+  const cached = historyCache.get(cacheKey);
+  const cacheFresh = cached && Date.now() - cached.storedAt < historyCacheTtl(timeframe);
+  if (cacheFresh) return cached.bars;
+
+  let request = historyInflight.get(cacheKey);
+  if (!request) {
+    console.log("PIPSGOX history request:", url);
+    request = apiFetch(url, { cache: "no-store" }).then(async (response) => {
+      if (!response.ok) {
+        let detail = "";
+        try {
+          const payload = await response.json() as { detail?: unknown };
+          detail = typeof payload.detail === "string" ? payload.detail : "";
+        } catch {
+          // Keep the HTTP status when the backend does not return JSON.
+        }
+        throw new Error("History HTTP " + response.status + (detail ? ": " + detail : ""));
+      }
+      return response.json() as Promise<HistoryCandle[]>;
+    }).then((raw) => {
+      const bars = raw
+        .map((item) => ({
+          timestamp: Number(item.time) * 1000,
+          open: Number(item.open),
+          high: Number(item.high),
+          low: Number(item.low),
+          close: Number(item.close),
+          volume: Number(item.volume || 0),
+        }))
+        .filter((item) =>
+          Number.isFinite(item.timestamp) &&
+          Number.isFinite(item.open) &&
+          Number.isFinite(item.high) &&
+          Number.isFinite(item.low) &&
+          Number.isFinite(item.close),
+        )
+        .sort((a, b) => a.timestamp - b.timestamp) as KLineData[];
+      historyCache.set(cacheKey, { storedAt: Date.now(), bars });
+      return bars;
+    }).finally(() => historyInflight.delete(cacheKey));
+    historyInflight.set(cacheKey, request);
+  }
+  return request;
+}
+
 type CrosshairData = {
   timestamp: number;
   open: number;
@@ -657,48 +704,7 @@ export function Chart({
             }
             if (cacheFresh) return;
 
-            let barsPromise = historyInflight.get(cacheKey);
-            if (!barsPromise) {
-              console.log("PIPSGOX history request:", url);
-              barsPromise = apiFetch(url, { cache: "no-store" }).then(async (response) => {
-                if (!response.ok) {
-            let detail = "";
-            try {
-              const payload = await response.json() as { detail?: unknown };
-              detail = typeof payload.detail === "string" ? payload.detail : "";
-            } catch {
-              // Keep the HTTP status when the backend does not return JSON.
-            }
-            throw new Error(
-              "History HTTP " + response.status + (detail ? ": " + detail : ""),
-            );
-          }
-                return response.json() as Promise<HistoryCandle[]>;
-              }).then((raw) => {
-                const bars = raw
-                  .map((item) => ({
-                    timestamp: Number(item.time) * 1000,
-                    open: Number(item.open),
-                    high: Number(item.high),
-                    low: Number(item.low),
-                    close: Number(item.close),
-                    volume: Number(item.volume || 0),
-                  }))
-                  .filter((item) =>
-                    Number.isFinite(item.timestamp) &&
-                    Number.isFinite(item.open) &&
-                    Number.isFinite(item.high) &&
-                    Number.isFinite(item.low) &&
-                    Number.isFinite(item.close),
-                  )
-                  .sort((a, b) => a.timestamp - b.timestamp);
-                historyCache.set(cacheKey, { storedAt: Date.now(), bars });
-                return bars;
-              }).finally(() => historyInflight.delete(cacheKey));
-              historyInflight.set(cacheKey, barsPromise);
-            }
-
-            const bars = await barsPromise;
+            const bars = await loadHistoryBars(url, timeframe);
 
             if (disposed) return;
 
@@ -891,19 +897,9 @@ export function Chart({
       if (show52WeekHigh || show52WeekLow) {
         void (async () => {
           try {
-            const response = await apiFetch("/api/history?symbol=" + encodeURIComponent(symbol) + "&timeframe=D&limit=300&adjustment=" + encodeURIComponent(adjustment),
-              { cache: "no-store" },
-            );
-            if (!response.ok) return;
-
-            const raw = (await response.json()) as HistoryCandle[];
-            if (disposed) return;
-
-            const daily = raw.filter((item) =>
-              Number.isFinite(Number(item.high)) &&
-              Number.isFinite(Number(item.low)),
-            );
-            if (!daily.length) return;
+            const dailyUrl = "/api/history?symbol=" + encodeURIComponent(symbol) + "&timeframe=D&limit=300&adjustment=" + encodeURIComponent(adjustment);
+            const daily = await loadHistoryBars(dailyUrl, "D");
+            if (disposed || !daily.length) return;
 
             const recent = daily.slice(-260);
             const high52 = Math.max(...recent.map((item) => Number(item.high)));

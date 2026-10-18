@@ -56,21 +56,6 @@ export type PipscriptOutput =
         points: Array<{ time: number; value: number }>;
       }>;
     };
-  | {
-      type: "line";
-      name: string;
-      points: Array<{ time: number; value: number }>;
-    }
-  | {
-      type: "table";
-      title: string;
-      columns: string[];
-      rows: string[][];
-      lines?: Array<{
-        name: string;
-        points: Array<{ time: number; value: number }>;
-      }>;
-    };
 
 type Props = {
   chartType: ChartType;
@@ -906,7 +891,7 @@ export function Chart({
       if (show52WeekHigh || show52WeekLow) {
         void (async () => {
           try {
-            const response = await apiFetch("/api/history?symbol=" + encodeURIComponent(symbol) + "&timeframe=D&limit=400&adjustment=" + encodeURIComponent(adjustment),
+            const response = await apiFetch("/api/history?symbol=" + encodeURIComponent(symbol) + "&timeframe=D&limit=300&adjustment=" + encodeURIComponent(adjustment),
               { cache: "no-store" },
             );
             if (!response.ok) return;

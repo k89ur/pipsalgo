@@ -291,7 +291,9 @@ raise SystemExit(0 if server_ok and ready else 1)
 PY
   HEALTH_RESULT=$?
   if [[ "$HEALTH_RESULT" -ne 0 ]]; then
-    echo "STATUS: WARN — Review backend health above before using PIPSGOX."
+    echo "STATUS: FAIL — Runtime readiness checks failed."
+    echo "ACTION: Review backend health above and run ./scripts/pipsgox-doctor.sh"
+    exit 1
   fi
 else
   echo "STATUS: FAIL — Backend health unavailable"
